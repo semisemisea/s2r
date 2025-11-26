@@ -1,0 +1,20 @@
+[package]
+name = "sysv2riscv"
+version = "0.1.0"
+edition = "2024"
+authors = ["semisemisea <semisemisemisea@gmail.com>"]
+rust-version = "1.90"
+readme = "README.md"
+
+[build-dependencies]
+lalrpop = "0.22.2"
+
+[dependencies]
+anyhow = "1.0.100"
+koopa = "0.0.9"
+lalrpop-util = { version = "0.22.2", features = ["lexer"] }
+num_enum = "0.7.5"
+thiserror = "2.0.17"
+
+[features]
+DEBUG = []

@@ -1,0 +1,7 @@
+/target
+*.sysy
+*.riscv
+*.koopa
+.nvim.lua
+.git
+.DS_Store

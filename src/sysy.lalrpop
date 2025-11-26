@@ -1,0 +1,114 @@
+use crate::ast::item::*;
+use koopa::ir::BinaryOp;
+
+grammar;
+
+match {
+  r"\s*" => {},
+  r"//[^\n\r]*[\n\r]*" => {},
+  r"/\*[^*]*\*+(?:[^/*][^*]*\*+)*/" => {},
+  _
+}
+
+pub CompUnit: CompUnit = <func_def: FuncDef> => CompUnit {<>};
+
+FuncDef: FuncDef = {
+  <func_type: FuncType> <ident: Ident> "(" ")" <block: Block> => {
+    FuncDef {<>}
+  }
+}
+
+FuncType: FuncType = "int" => FuncType::Int;
+
+Stmt: Stmt = "return" <exp: Exp> ";" => Stmt {exp};
+
+Block: Block = "{" <stmt: Stmt> "}" => Block {stmt};
+
+Number: i32 = <num: IntConst> => <>;
+
+Ident: String = r"[_a-zA-Z][_a-zA-Z0-9]*" =>  <>.to_string();
+
+IntConst: i32 = {
+  r"[1-9][0-9]*" => i32::from_str_radix(<>, 10).unwrap(),
+  r"0[0-7]*" => i32::from_str_radix(<>, 8).unwrap(),
+  r"0[xX][0-9a-fA-F]+" => i32::from_str_radix(&<>[2..], 16).unwrap(),
+}
+
+Exp: Exp = <lor_exp: LOrExp> => Exp {<>};
+
+PrimaryExp: PrimaryExp = {
+  "(" <exp: Exp> ")" => PrimaryExp::Exp(exp),
+  <num: Number> => PrimaryExp::Number(num),
+}
+
+UnaryOp: UnaryOp = {
+  "+" => UnaryOp::Add,
+  "-" => UnaryOp::Minus,
+  "!" => UnaryOp::Negation,
+}
+
+BinaryOp: BinaryOp = {
+    "+" => BinaryOp::Add,
+    "-" => BinaryOp::Sub,
+    "*" => BinaryOp::Mul,
+    "/" => BinaryOp::Div,
+    "%" => BinaryOp::Mod,
+}
+
+UnaryExp: UnaryExp = {
+  <primary_exp: PrimaryExp> => UnaryExp::PrimaryExp(Box::new(primary_exp)),
+  <unary_op: UnaryOp> <unary_exp: UnaryExp> => UnaryExp::Unary(unary_op, Box::new(unary_exp)),
+}
+
+AddExpOnlyOp: BinaryOp = {
+    "+" => BinaryOp::Add,
+    "-" => BinaryOp::Sub,
+}
+
+AddExp: AddExp = {
+    <mul_exp: MulExp> => AddExp::MulExp(mul_exp),
+    <add_exp: AddExp> <op: AddExpOnlyOp> <mul_exp: MulExp> => AddExp::Comp(Box::new(add_exp), op, mul_exp),
+}
+
+MulExpOnlyOp: BinaryOp = {
+    "*" => BinaryOp::Mul,
+    "/" => BinaryOp::Div,
+    "%" => BinaryOp::Mod,
+}
+
+MulExp: MulExp = {
+    <unary_exp: UnaryExp> => MulExp::UnaryExp(<>),
+    <mul_exp:MulExp> <op: MulExpOnlyOp> <unary_exp: UnaryExp> => MulExp::Comp(Box::new(mul_exp), op, unary_exp),
+}
+
+LOrExp: LOrExp = {
+    <land_exp: LAndExp> => LOrExp::LAndExp(land_exp),
+    <lor_exp: LOrExp> "||" <land_exp: LAndExp> => LOrExp::Comp(Box::new(lor_exp), land_exp),
+}
+
+LAndExp: LAndExp = {
+    <eq_exp: EqExp> => LAndExp::EqExp(eq_exp),
+    <land_exp: LAndExp> "&&" <eq_exp: EqExp> => LAndExp::Comp(Box::new(land_exp), eq_exp),
+}
+
+EqExpOnlyOp: BinaryOp = {
+    "==" => BinaryOp::Eq,
+    "!=" => BinaryOp::NotEq,
+}
+
+EqExp: EqExp = {
+    <rel_exp: RelExp> => EqExp::RelExp(rel_exp),
+    <eq_exp: EqExp> <op: EqExpOnlyOp> <rel_exp: RelExp> => EqExp::Comp(Box::new(eq_exp), op, rel_exp),
+}
+
+RelExpOnlyOp: BinaryOp = {
+    "<" => BinaryOp::Lt,
+    ">" => BinaryOp::Gt,
+    "<=" => BinaryOp::Le,
+    ">=" => BinaryOp::Ge,
+}
+
+RelExp: RelExp = {
+    <add_exp: AddExp> => RelExp::AddExp(add_exp),
+    <rel_exp: RelExp> <op: RelExpOnlyOp> <add_exp: AddExp> => RelExp::Comp(Box::new(rel_exp), op, add_exp),
+}
