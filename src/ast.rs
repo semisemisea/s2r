@@ -1,11 +1,18 @@
+#[allow(unused)]
 pub mod item {
     use koopa::ir::BinaryOp;
 
+    /// CompUnit ::= FuncDef;
+    ///
+    /// The root of the AST, representing a complete compilation unit.
     #[derive(Debug)]
     pub struct CompUnit {
         pub func_def: FuncDef,
     }
 
+    /// FuncDef ::= FuncType IDENT "(" ")" Block;
+    ///
+    /// A function definition with return type, name, and body.
     #[derive(Debug)]
     pub struct FuncDef {
         pub func_type: FuncType,
@@ -13,32 +20,145 @@ pub mod item {
         pub block: Block,
     }
 
+    /// FuncType ::= "int";
+    ///
+    /// The return type of a function.
     #[derive(Debug)]
     pub enum FuncType {
         Int,
     }
 
+    /// Block ::= "{" {BlockItem} "}";
+    ///
+    /// A block containing zero or more block items.
     #[derive(Debug)]
     pub struct Block {
-        pub stmt: Stmt,
+        pub block_items: Vec<BlockItem>,
     }
 
+    /// BlockItem ::= Decl | Stmt;
+    ///
+    /// An item within a block, either a declaration or a statement.
     #[derive(Debug)]
-    pub struct Stmt {
+    pub enum BlockItem {
+        Decl(Decl),
+        Stmt(Stmt),
+    }
+
+    /// Decl ::= ConstDecl | VarDecl;
+    ///
+    /// A declaration, either constant or variable.
+    #[derive(Debug)]
+    pub enum Decl {
+        ConstDecl(ConstDecl),
+        VarDecl(VarDecl),
+    }
+
+    /// ConstDecl ::= "const" BType ConstDef {"," ConstDef} ";";
+    ///
+    /// A constant declaration with base type and one or more constant definitions.
+    #[derive(Debug)]
+    pub struct ConstDecl {
+        pub btype: BType,
+        pub const_defs: Vec<ConstDef>,
+    }
+
+    /// BType ::= "int";
+    ///
+    /// The base type for variables and constants.
+    #[derive(Debug)]
+    pub enum BType {
+        Int,
+    }
+
+    /// ConstDef ::= IDENT "=" ConstInitVal;
+    ///
+    /// A constant definition with identifier and initial value.
+    #[derive(Debug)]
+    pub struct ConstDef {
+        pub ident: String,
+        pub const_init_val: ConstInitVal,
+    }
+
+    /// ConstInitVal ::= ConstExp;
+    ///
+    /// The initial value of a constant.
+    #[derive(Debug)]
+    pub struct ConstInitVal {
+        pub const_exp: ConstExp,
+    }
+
+    /// VarDecl ::= BType VarDef {"," VarDef} ";";
+    ///
+    /// A variable declaration with base type and one or more variable definitions.
+    #[derive(Debug)]
+    pub struct VarDecl {
+        pub btype: BType,
+        pub var_defs: Vec<VarDef>,
+    }
+
+    /// VarDef ::= IDENT | IDENT "=" InitVal;
+    ///
+    /// A variable definition with identifier and optional initial value.
+    #[derive(Debug)]
+    pub struct VarDef {
+        pub ident: String,
+        pub init_val: Option<InitVal>,
+    }
+
+    /// InitVal ::= Exp;
+    ///
+    /// The initial value of a variable.
+    #[derive(Debug)]
+    pub struct InitVal {
         pub exp: Exp,
     }
 
+    /// Stmt ::= LVal "=" Exp ";" | "return" Exp ";";
+    ///
+    /// A statement, either an assignment or a return statement.
+    #[derive(Debug)]
+    pub enum Stmt {
+        Assign(LVal, Exp),
+        Return(Exp),
+    }
+
+    /// Exp ::= LOrExp;
+    ///
+    /// An expression, starting from logical OR expressions.
     #[derive(Debug)]
     pub struct Exp {
         pub lor_exp: LOrExp,
     }
 
+    /// LVal ::= IDENT;
+    ///
+    /// A left-value, representing a variable that can be assigned to.
+    #[derive(Debug)]
+    pub struct LVal {
+        pub ident: String,
+    }
+
+    /// ConstExp ::= Exp;
+    ///
+    /// A constant expression, must be evaluable at compile time.
+    #[derive(Debug)]
+    pub struct ConstExp {
+        pub exp: Exp,
+    }
+
+    /// UnaryExp ::= PrimaryExp | UnaryOp UnaryExp;
+    ///
+    /// A unary expression, either a primary expression or a unary operation applied to another unary expression.
     #[derive(Debug)]
     pub enum UnaryExp {
         PrimaryExp(Box<PrimaryExp>),
         Unary(UnaryOp, Box<UnaryExp>),
     }
 
+    /// UnaryOp ::= "+" | "-" | "!";
+    ///
+    /// A unary operator: positive, negative, or logical negation.
     #[derive(Debug)]
     pub enum UnaryOp {
         Add,
@@ -46,48 +166,73 @@ pub mod item {
         Negation,
     }
 
+    /// PrimaryExp ::= "(" Exp ")" | LVal | Number;
+    ///
+    /// A primary expression: parenthesized expression, left-value, or number literal.
     #[derive(Debug)]
     pub enum PrimaryExp {
         Exp(Exp),
+        LVal(LVal),
         Number(Number),
     }
 
+    /// AddExp ::= MulExp | AddExp ("+" | "-") MulExp;
+    ///
+    /// An additive expression with addition or subtraction.
     #[derive(Debug)]
     pub enum AddExp {
         MulExp(MulExp),
         Comp(Box<AddExp>, BinaryOp, MulExp),
     }
 
+    /// MulExp ::= UnaryExp | MulExp ("*" | "/" | "%") UnaryExp;
+    ///
+    /// A multiplicative expression with multiplication, division, or modulo.
     #[derive(Debug)]
     pub enum MulExp {
         UnaryExp(UnaryExp),
         Comp(Box<MulExp>, BinaryOp, UnaryExp),
     }
 
+    /// LOrExp ::= LAndExp | LOrExp "||" LAndExp;
+    ///
+    /// A logical OR expression with short-circuit evaluation.
     #[derive(Debug)]
     pub enum LOrExp {
         LAndExp(LAndExp),
         Comp(Box<LOrExp>, LAndExp),
     }
 
+    /// LAndExp ::= EqExp | LAndExp "&&" EqExp;
+    ///
+    /// A logical AND expression with short-circuit evaluation.
     #[derive(Debug)]
     pub enum LAndExp {
         EqExp(EqExp),
         Comp(Box<LAndExp>, EqExp),
     }
 
+    /// EqExp ::= RelExp | EqExp ("==" | "!=") RelExp;
+    ///
+    /// An equality expression with equal or not-equal comparison.
     #[derive(Debug)]
     pub enum EqExp {
         RelExp(RelExp),
         Comp(Box<EqExp>, BinaryOp, RelExp),
     }
 
+    /// RelExp ::= AddExp | RelExp ("<" | ">" | "<=" | ">=") AddExp;
+    ///
+    /// A relational expression with comparison operators.
     #[derive(Debug)]
     pub enum RelExp {
         AddExp(AddExp),
         Comp(Box<RelExp>, BinaryOp, AddExp),
     }
 
+    /// Number ::= INT_CONST;
+    ///
+    /// An integer constant literal.
     pub type Number = i32;
 }
 
@@ -245,18 +390,38 @@ impl Convert2Koopa for item::FuncDef {
 
 impl Convert2Koopa for item::Block {
     fn convert(&self, ctx: &mut AstGenContext) {
-        self.stmt.convert(ctx);
+        self.block_items
+            .iter()
+            .for_each(|block_item| block_item.convert(ctx));
     }
+}
+
+impl Convert2Koopa for item::BlockItem {
+    fn convert(&self, ctx: &mut AstGenContext) {
+        match self {
+            item::BlockItem::Decl(decl) => decl.convert(ctx),
+            item::BlockItem::Stmt(stmt) => stmt.convert(ctx),
+        }
+    }
+}
+
+impl Convert2Koopa for item::Decl {
+    fn convert(&self, ctx: &mut AstGenContext) {}
 }
 
 impl Convert2Koopa for item::Stmt {
     fn convert(&self, ctx: &mut AstGenContext) {
         // let func_data = ctx.program.func_mut(*ctx.func_stack.last().unwrap());
-        self.exp.convert(ctx);
-        let v_ret = ctx.pop_val();
-        let func_data = ctx.curr_func_data_mut();
-        let ret = func_data.dfg_mut().new_value().ret(v_ret);
-        ctx.push_inst(ret);
+        match self {
+            item::Stmt::Assign(l_val, exp) => todo!(),
+            item::Stmt::Return(ret_exp) => {
+                ret_exp.convert(ctx);
+                let v_ret = ctx.pop_val();
+                let func_data = ctx.curr_func_data_mut();
+                let ret = func_data.dfg_mut().new_value().ret(v_ret);
+                ctx.push_inst(ret);
+            }
+        }
     }
 }
 
@@ -502,8 +667,13 @@ impl Convert2Koopa for item::PrimaryExp {
                 let num = func_data.dfg_mut().new_value().integer(*num);
                 ctx.val_stack.push(num);
             }
+            item::PrimaryExp::LVal(l_val) => todo!(),
         }
     }
+}
+
+impl Convert2Koopa for item::LVal {
+    fn convert(&self, ctx: &mut AstGenContext) {}
 }
 
 impl Convert2Koopa for koopa::ir::BinaryOp {
