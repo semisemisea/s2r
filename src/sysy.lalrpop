@@ -1,4 +1,4 @@
-use crate::ast::item::*;
+use crate::ast_infra::item::*;
 use koopa::ir::BinaryOp;
 
 grammar;
@@ -71,7 +71,7 @@ LVal: LVal = <ident: Ident> => LVal {ident};
 
 Number: i32 = <num: IntConst> => <>;
 
-Ident: String = r"[_a-zA-Z][_a-zA-Z0-9]*" =>  <>.to_string();
+Ident: std::rc::Rc<str> = r"[_a-zA-Z][_a-zA-Z0-9]*" =>  std::rc::Rc::from(<>);
 
 IntConst: i32 = {
   r"[1-9][0-9]*" => i32::from_str_radix(<>, 10).unwrap(),

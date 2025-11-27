@@ -5,3 +5,4 @@
 .nvim.lua
 .git
 .DS_Store
+*.c

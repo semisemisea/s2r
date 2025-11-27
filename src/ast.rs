@@ -1,246 +1,6 @@
-#[allow(unused)]
-pub mod item {
-    use koopa::ir::BinaryOp;
-
-    /// CompUnit ::= FuncDef;
-    ///
-    /// The root of the AST, representing a complete compilation unit.
-    #[derive(Debug)]
-    pub struct CompUnit {
-        pub func_def: FuncDef,
-    }
-
-    /// FuncDef ::= FuncType IDENT "(" ")" Block;
-    ///
-    /// A function definition with return type, name, and body.
-    #[derive(Debug)]
-    pub struct FuncDef {
-        pub func_type: FuncType,
-        pub ident: String,
-        pub block: Block,
-    }
-
-    /// FuncType ::= "int";
-    ///
-    /// The return type of a function.
-    #[derive(Debug)]
-    pub enum FuncType {
-        Int,
-    }
-
-    /// Block ::= "{" {BlockItem} "}";
-    ///
-    /// A block containing zero or more block items.
-    #[derive(Debug)]
-    pub struct Block {
-        pub block_items: Vec<BlockItem>,
-    }
-
-    /// BlockItem ::= Decl | Stmt;
-    ///
-    /// An item within a block, either a declaration or a statement.
-    #[derive(Debug)]
-    pub enum BlockItem {
-        Decl(Decl),
-        Stmt(Stmt),
-    }
-
-    /// Decl ::= ConstDecl | VarDecl;
-    ///
-    /// A declaration, either constant or variable.
-    #[derive(Debug)]
-    pub enum Decl {
-        ConstDecl(ConstDecl),
-        VarDecl(VarDecl),
-    }
-
-    /// ConstDecl ::= "const" BType ConstDef {"," ConstDef} ";";
-    ///
-    /// A constant declaration with base type and one or more constant definitions.
-    #[derive(Debug)]
-    pub struct ConstDecl {
-        pub btype: BType,
-        pub const_defs: Vec<ConstDef>,
-    }
-
-    /// BType ::= "int";
-    ///
-    /// The base type for variables and constants.
-    #[derive(Debug)]
-    pub enum BType {
-        Int,
-    }
-
-    /// ConstDef ::= IDENT "=" ConstInitVal;
-    ///
-    /// A constant definition with identifier and initial value.
-    #[derive(Debug)]
-    pub struct ConstDef {
-        pub ident: String,
-        pub const_init_val: ConstInitVal,
-    }
-
-    /// ConstInitVal ::= ConstExp;
-    ///
-    /// The initial value of a constant.
-    #[derive(Debug)]
-    pub struct ConstInitVal {
-        pub const_exp: ConstExp,
-    }
-
-    /// VarDecl ::= BType VarDef {"," VarDef} ";";
-    ///
-    /// A variable declaration with base type and one or more variable definitions.
-    #[derive(Debug)]
-    pub struct VarDecl {
-        pub btype: BType,
-        pub var_defs: Vec<VarDef>,
-    }
-
-    /// VarDef ::= IDENT | IDENT "=" InitVal;
-    ///
-    /// A variable definition with identifier and optional initial value.
-    #[derive(Debug)]
-    pub struct VarDef {
-        pub ident: String,
-        pub init_val: Option<InitVal>,
-    }
-
-    /// InitVal ::= Exp;
-    ///
-    /// The initial value of a variable.
-    #[derive(Debug)]
-    pub struct InitVal {
-        pub exp: Exp,
-    }
-
-    /// Stmt ::= LVal "=" Exp ";" | "return" Exp ";";
-    ///
-    /// A statement, either an assignment or a return statement.
-    #[derive(Debug)]
-    pub enum Stmt {
-        Assign(LVal, Exp),
-        Return(Exp),
-    }
-
-    /// Exp ::= LOrExp;
-    ///
-    /// An expression, starting from logical OR expressions.
-    #[derive(Debug)]
-    pub struct Exp {
-        pub lor_exp: LOrExp,
-    }
-
-    /// LVal ::= IDENT;
-    ///
-    /// A left-value, representing a variable that can be assigned to.
-    #[derive(Debug)]
-    pub struct LVal {
-        pub ident: String,
-    }
-
-    /// ConstExp ::= Exp;
-    ///
-    /// A constant expression, must be evaluable at compile time.
-    #[derive(Debug)]
-    pub struct ConstExp {
-        pub exp: Exp,
-    }
-
-    /// UnaryExp ::= PrimaryExp | UnaryOp UnaryExp;
-    ///
-    /// A unary expression, either a primary expression or a unary operation applied to another unary expression.
-    #[derive(Debug)]
-    pub enum UnaryExp {
-        PrimaryExp(Box<PrimaryExp>),
-        Unary(UnaryOp, Box<UnaryExp>),
-    }
-
-    /// UnaryOp ::= "+" | "-" | "!";
-    ///
-    /// A unary operator: positive, negative, or logical negation.
-    #[derive(Debug)]
-    pub enum UnaryOp {
-        Add,
-        Minus,
-        Negation,
-    }
-
-    /// PrimaryExp ::= "(" Exp ")" | LVal | Number;
-    ///
-    /// A primary expression: parenthesized expression, left-value, or number literal.
-    #[derive(Debug)]
-    pub enum PrimaryExp {
-        Exp(Exp),
-        LVal(LVal),
-        Number(Number),
-    }
-
-    /// AddExp ::= MulExp | AddExp ("+" | "-") MulExp;
-    ///
-    /// An additive expression with addition or subtraction.
-    #[derive(Debug)]
-    pub enum AddExp {
-        MulExp(MulExp),
-        Comp(Box<AddExp>, BinaryOp, MulExp),
-    }
-
-    /// MulExp ::= UnaryExp | MulExp ("*" | "/" | "%") UnaryExp;
-    ///
-    /// A multiplicative expression with multiplication, division, or modulo.
-    #[derive(Debug)]
-    pub enum MulExp {
-        UnaryExp(UnaryExp),
-        Comp(Box<MulExp>, BinaryOp, UnaryExp),
-    }
-
-    /// LOrExp ::= LAndExp | LOrExp "||" LAndExp;
-    ///
-    /// A logical OR expression with short-circuit evaluation.
-    #[derive(Debug)]
-    pub enum LOrExp {
-        LAndExp(LAndExp),
-        Comp(Box<LOrExp>, LAndExp),
-    }
-
-    /// LAndExp ::= EqExp | LAndExp "&&" EqExp;
-    ///
-    /// A logical AND expression with short-circuit evaluation.
-    #[derive(Debug)]
-    pub enum LAndExp {
-        EqExp(EqExp),
-        Comp(Box<LAndExp>, EqExp),
-    }
-
-    /// EqExp ::= RelExp | EqExp ("==" | "!=") RelExp;
-    ///
-    /// An equality expression with equal or not-equal comparison.
-    #[derive(Debug)]
-    pub enum EqExp {
-        RelExp(RelExp),
-        Comp(Box<EqExp>, BinaryOp, RelExp),
-    }
-
-    /// RelExp ::= AddExp | RelExp ("<" | ">" | "<=" | ">=") AddExp;
-    ///
-    /// A relational expression with comparison operators.
-    #[derive(Debug)]
-    pub enum RelExp {
-        AddExp(AddExp),
-        Comp(Box<RelExp>, BinaryOp, AddExp),
-    }
-
-    /// Number ::= INT_CONST;
-    ///
-    /// An integer constant literal.
-    pub type Number = i32;
-}
-
-use koopa::ir::{
-    builder::{BlockBuilder, LocalBuilder},
-    builder_traits::*,
-    *,
-};
+use crate::ast_infra::{AstGenContext, item};
+use anyhow::{Result, anyhow};
+use koopa::ir::{builder_traits::*, *};
 
 impl item::FuncType {
     fn get_type(&self) -> Type {
@@ -250,194 +10,152 @@ impl item::FuncType {
     }
 }
 
-pub struct AstGenContext {
-    program: Program,
-    func_stack: Vec<Function>,
-    val_stack: Vec<Value>,
-    curr_bb: Option<BasicBlock>,
+/// Define how a AST node should convert to Koopa IR.
+///
+/// Required method: `fn convert(&self, ctx: &mut AstGenContext) -> Result<()>;`
+///
+/// @param `ctx`: Context that store everything needed to convert.
+pub trait ToKoopaIR {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()>;
 }
 
-pub trait Convert2Koopa {
-    fn convert(&self, ctx: &mut AstGenContext);
-}
-
-impl AstGenContext {
-    pub fn new() -> AstGenContext {
-        AstGenContext {
-            program: Program::new(),
-            func_stack: Vec::new(),
-            val_stack: Vec::new(),
-            curr_bb: None,
-        }
-    }
-
-    #[inline]
-    pub fn end(self) -> Program {
-        self.program
-    }
-
-    #[inline]
-    fn curr_func_data_mut(&mut self) -> &mut FunctionData {
-        self.program.func_mut(*self.func_stack.last().unwrap())
-    }
-
-    #[inline]
-    fn curr_func_data(&self) -> &FunctionData {
-        self.program.func(*self.func_stack.last().unwrap())
-    }
-
-    #[inline]
-    fn push_inst(&mut self, val: Value) {
-        let curr_basic_block = self.curr_bb.unwrap();
-        self.curr_func_data_mut()
-            .layout_mut()
-            .bb_mut(curr_basic_block)
-            .insts_mut()
-            .push_key_back(val)
-            .unwrap();
-    }
-
-    fn remove_inst(&mut self, val: Value) -> Option<(Value, layout::InstNode)> {
-        let curr_basic_blcok = self.curr_bb.unwrap();
-        self.curr_func_data_mut()
-            .layout_mut()
-            .bb_mut(curr_basic_blcok)
-            .insts_mut()
-            .remove(&val)
-    }
-
-    #[inline]
-    fn push_val(&mut self, val: Value) {
-        self.val_stack.push(val);
-    }
-
-    #[inline]
-    fn pop_val(&mut self) -> Option<Value> {
-        self.val_stack.pop()
-    }
-
-    // #[inline]
-    // fn peek_val(&self) -> Option<&Value> {
-    //     self.val_stack.last()
-    // }
-
-    #[must_use]
-    #[inline]
-    fn new_bb(&mut self) -> BlockBuilder<'_> {
-        self.curr_func_data_mut().dfg_mut().new_bb()
-    }
-
-    fn register_bb(&mut self, bb: BasicBlock) {
-        self.curr_func_data_mut()
-            .layout_mut()
-            .bbs_mut()
-            .push_key_back(bb)
-            .unwrap()
-    }
-
-    fn remove_bb(&mut self, bb: BasicBlock) -> Option<(BasicBlock, layout::BasicBlockNode)> {
-        self.curr_func_data_mut().layout_mut().bbs_mut().remove(&bb)
-    }
-
-    #[must_use]
-    #[inline]
-    fn new_value(&mut self) -> LocalBuilder<'_> {
-        self.curr_func_data_mut().dfg_mut().new_value()
-    }
-
-    #[inline]
-    fn set_curr_bb(&mut self, bb: BasicBlock) -> Option<BasicBlock> {
-        self.curr_bb.replace(bb)
-    }
-
-    // #[inline]
-    // fn reset_bb(&mut self, bb: Option<BasicBlock>) {
-    //     self.curr_bb = bb
-    // }
-
-    #[inline]
-    fn bb_params(&mut self, bb: BasicBlock) -> &[Value] {
-        self.curr_func_data_mut().dfg().bb(bb).params()
+impl ToKoopaIR for item::CompUnit {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        self.func_def.convert(ctx)?;
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::CompUnit {
-    fn convert(&self, ctx: &mut AstGenContext) {
-        self.func_def.convert(ctx);
-    }
-}
-
-impl Convert2Koopa for item::FuncDef {
-    fn convert(&self, ctx: &mut AstGenContext) {
+impl ToKoopaIR for item::FuncDef {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         let func = ctx.program.new_func(FunctionData::new(
             format!("@{}", self.ident),
             vec![],
             self.func_type.get_type(),
         ));
-        ctx.func_stack.push(func);
+        ctx.push_func(func);
         let func_data = ctx.curr_func_data_mut();
         let bb = func_data
             .dfg_mut()
             .new_bb()
             .basic_block(Some("%entry".into()));
         func_data.layout_mut().bbs_mut().push_key_back(bb).unwrap();
-        let prev_bb = ctx.curr_bb.replace(bb);
-        self.block.convert(ctx);
-        ctx.func_stack.pop();
-        ctx.curr_bb = prev_bb;
+        let prev_bb = ctx.set_curr_bb(bb);
+        self.block.convert(ctx)?;
+        ctx.pop_func();
+        ctx.reset_bb(prev_bb);
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::Block {
-    fn convert(&self, ctx: &mut AstGenContext) {
-        self.block_items
-            .iter()
-            .for_each(|block_item| block_item.convert(ctx));
-    }
-}
-
-impl Convert2Koopa for item::BlockItem {
-    fn convert(&self, ctx: &mut AstGenContext) {
-        match self {
-            item::BlockItem::Decl(decl) => decl.convert(ctx),
-            item::BlockItem::Stmt(stmt) => stmt.convert(ctx),
+impl ToKoopaIR for item::Block {
+    #[inline]
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        for block_item in self.block_items.iter() {
+            block_item.convert(ctx)?;
         }
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::Decl {
-    fn convert(&self, ctx: &mut AstGenContext) {}
+impl ToKoopaIR for item::BlockItem {
+    #[inline]
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        match self {
+            item::BlockItem::Decl(decl) => decl.convert(ctx)?,
+            item::BlockItem::Stmt(stmt) => stmt.convert(ctx)?,
+        }
+        Ok(())
+    }
 }
 
-impl Convert2Koopa for item::Stmt {
-    fn convert(&self, ctx: &mut AstGenContext) {
+impl ToKoopaIR for item::Decl {
+    #[inline]
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        match self {
+            item::Decl::ConstDecl(c_decl) => c_decl.convert(ctx)?,
+            item::Decl::VarDecl(v_decl) => v_decl.convert(ctx)?,
+        }
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::ConstDecl {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        assert!(matches!(self.btype, item::BType::Int));
+        for const_def in self.const_defs.iter() {
+            const_def.convert(ctx)?;
+        }
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::ConstDef {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        // Get the init val
+        self.const_init_val.convert(ctx)?;
+        let init_val = ctx.pop_val().unwrap();
+        let ValueKind::Integer(init_val) = ctx.curr_func_data().dfg().value(init_val).kind() else {
+            return Err(anyhow!("Value can't be calculated at compile time."));
+        };
+        ctx.insert_const(self.ident.clone(), init_val.value());
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::ConstInitVal {
+    #[inline]
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        self.const_exp.convert(ctx)?;
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::ConstExp {
+    #[inline]
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        self.exp.convert(ctx)?;
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::VarDecl {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::Stmt {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         // let func_data = ctx.program.func_mut(*ctx.func_stack.last().unwrap());
         match self {
             item::Stmt::Assign(l_val, exp) => todo!(),
             item::Stmt::Return(ret_exp) => {
-                ret_exp.convert(ctx);
+                ret_exp.convert(ctx)?;
                 let v_ret = ctx.pop_val();
                 let func_data = ctx.curr_func_data_mut();
                 let ret = func_data.dfg_mut().new_value().ret(v_ret);
                 ctx.push_inst(ret);
             }
         }
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::Exp {
-    fn convert(&self, ctx: &mut AstGenContext) {
-        self.lor_exp.convert(ctx);
+impl ToKoopaIR for item::Exp {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        self.lor_exp.convert(ctx)?;
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::LOrExp {
-    fn convert(&self, ctx: &mut AstGenContext) {
+impl ToKoopaIR for item::LOrExp {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::LOrExp::LAndExp(land_exp) => land_exp.convert(ctx),
+            item::LOrExp::LAndExp(land_exp) => land_exp.convert(ctx)?,
             item::LOrExp::Comp(lor_exp, land_exp) => {
                 // handle lhs
-                lor_exp.convert(ctx);
+                lor_exp.convert(ctx)?;
                 let lhs = ctx.pop_val().unwrap();
 
                 // check if lhs != 0
@@ -465,7 +183,7 @@ impl Convert2Koopa for item::LOrExp {
 
                 // check rhs
                 let original = ctx.set_curr_bb(rhs_bb).unwrap();
-                land_exp.convert(ctx);
+                land_exp.convert(ctx)?;
                 let rhs = ctx.pop_val().unwrap();
 
                 // Constant folding
@@ -491,7 +209,7 @@ impl Convert2Koopa for item::LOrExp {
                         .integer((int_lhs != 0 || int_rhs != 0) as _);
                     ctx.push_val(result);
 
-                    return;
+                    return Ok(());
                 }
                 let rhs_ne_0 = ctx.new_value().binary(BinaryOp::NotEq, rhs, zero);
                 ctx.push_inst(rhs_ne_0);
@@ -505,16 +223,17 @@ impl Convert2Koopa for item::LOrExp {
                 ctx.push_val(result);
             }
         }
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::LAndExp {
-    fn convert(&self, ctx: &mut AstGenContext) {
+impl ToKoopaIR for item::LAndExp {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::LAndExp::EqExp(eq_exp) => eq_exp.convert(ctx),
+            item::LAndExp::EqExp(eq_exp) => eq_exp.convert(ctx)?,
             item::LAndExp::Comp(land_exp, eq_exp) => {
                 // handle lhs
-                land_exp.convert(ctx);
+                land_exp.convert(ctx)?;
                 let lhs = ctx.pop_val().unwrap();
 
                 // check if lhs == 0
@@ -542,7 +261,7 @@ impl Convert2Koopa for item::LAndExp {
 
                 // check rhs
                 let original = ctx.set_curr_bb(rhs_bb).unwrap();
-                eq_exp.convert(ctx);
+                eq_exp.convert(ctx)?;
                 let rhs = ctx.pop_val().unwrap();
 
                 // Constant folding
@@ -568,7 +287,7 @@ impl Convert2Koopa for item::LAndExp {
                         .integer((int_lhs != 0 && int_rhs != 0) as _);
                     ctx.push_val(result);
 
-                    return;
+                    return Ok(());
                 }
                 let rhs_ne_0 = ctx.new_value().binary(BinaryOp::NotEq, rhs, zero);
                 ctx.push_inst(rhs_ne_0);
@@ -582,124 +301,120 @@ impl Convert2Koopa for item::LAndExp {
                 ctx.push_val(result);
             }
         }
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::EqExp {
-    fn convert(&self, ctx: &mut AstGenContext) {
+impl ToKoopaIR for item::EqExp {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::EqExp::RelExp(rel_exp) => rel_exp.convert(ctx),
+            item::EqExp::RelExp(rel_exp) => rel_exp.convert(ctx)?,
             item::EqExp::Comp(lhs_eq, op, rhs_rel) => {
-                lhs_eq.convert(ctx);
-                rhs_rel.convert(ctx);
+                lhs_eq.convert(ctx)?;
+                rhs_rel.convert(ctx)?;
                 assert!(matches!(*op, BinaryOp::Eq | BinaryOp::NotEq));
-                op.convert(ctx);
+                op.convert(ctx)?;
             }
         }
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::RelExp {
-    fn convert(&self, ctx: &mut AstGenContext) {
+impl ToKoopaIR for item::RelExp {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::RelExp::AddExp(add_exp) => add_exp.convert(ctx),
+            item::RelExp::AddExp(add_exp) => add_exp.convert(ctx)?,
             item::RelExp::Comp(lhs_rel, op, rhs_add) => {
-                lhs_rel.convert(ctx);
-                rhs_add.convert(ctx);
+                lhs_rel.convert(ctx)?;
+                rhs_add.convert(ctx)?;
                 assert!(matches!(
                     *op,
                     BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
                 ));
-                op.convert(ctx);
+                op.convert(ctx)?;
             }
         }
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::AddExp {
-    fn convert(&self, ctx: &mut AstGenContext) {
+impl ToKoopaIR for item::AddExp {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::AddExp::MulExp(mul_exp) => mul_exp.convert(ctx),
+            item::AddExp::MulExp(mul_exp) => mul_exp.convert(ctx)?,
             item::AddExp::Comp(lhs_add, op, rhs_mul) => {
-                lhs_add.convert(ctx);
-                rhs_mul.convert(ctx);
+                lhs_add.convert(ctx)?;
+                rhs_mul.convert(ctx)?;
                 assert!(matches!(*op, BinaryOp::Sub | BinaryOp::Add));
-                op.convert(ctx);
+                op.convert(ctx)?;
             }
         }
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::MulExp {
-    fn convert(&self, ctx: &mut AstGenContext) {
+impl ToKoopaIR for item::MulExp {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::MulExp::UnaryExp(unary_exp) => unary_exp.convert(ctx),
+            item::MulExp::UnaryExp(unary_exp) => unary_exp.convert(ctx)?,
             item::MulExp::Comp(lhs_mul, op, rhs_unary) => {
-                lhs_mul.convert(ctx);
-                rhs_unary.convert(ctx);
+                lhs_mul.convert(ctx)?;
+                rhs_unary.convert(ctx)?;
                 assert!(matches!(*op, BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod));
-                op.convert(ctx);
+                op.convert(ctx)?;
             }
         }
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::UnaryExp {
-    fn convert(&self, ctx: &mut AstGenContext) {
+impl ToKoopaIR for item::UnaryExp {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::UnaryExp::PrimaryExp(exp) => exp.convert(ctx),
+            item::UnaryExp::PrimaryExp(exp) => exp.convert(ctx)?,
             item::UnaryExp::Unary(unary_op, unary_exp) => {
-                unary_exp.convert(ctx);
-                unary_op.convert(ctx);
+                unary_exp.convert(ctx)?;
+                unary_op.convert(ctx)?;
             }
         }
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::PrimaryExp {
+impl ToKoopaIR for item::PrimaryExp {
     /// Grammar:
     /// PrimaryExp ::= "(" Exp ")" | Number;
-    fn convert(&self, ctx: &mut AstGenContext) {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::PrimaryExp::Exp(exp) => exp.convert(ctx),
+            item::PrimaryExp::Exp(exp) => exp.convert(ctx)?,
             item::PrimaryExp::Number(num) => {
                 let func_data = ctx.curr_func_data_mut();
                 let num = func_data.dfg_mut().new_value().integer(*num);
-                ctx.val_stack.push(num);
+                ctx.push_val(num);
             }
-            item::PrimaryExp::LVal(l_val) => todo!(),
+            item::PrimaryExp::LVal(l_val) => l_val.convert(ctx)?,
         }
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::LVal {
-    fn convert(&self, ctx: &mut AstGenContext) {}
+impl ToKoopaIR for item::LVal {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        let val = ctx
+            .get_const(&self.ident)
+            .ok_or(anyhow!("Variable {} not exists.", &*self.ident))?;
+        let val = ctx.new_value().integer(val);
+        ctx.push_val(val);
+        Ok(())
+    }
 }
 
-impl Convert2Koopa for koopa::ir::BinaryOp {
+impl ToKoopaIR for koopa::ir::BinaryOp {
     /// Assure you will call a binary operation or otherwise use crate::ast::item::UnaryOp
     ///
     /// General method to use two value to generate a value and an instruction.
     /// WARNING: Check the limitaion of binary operator before the call.
-    /// Example:
-    ///
-    ///```
-    /// impl Convert2Koopa for item::MulExp {
-    ///     fn convert(&self, ctx: &mut AstGenContext) {
-    ///         match self {
-    ///             item::MulExp::UnaryExp(unary_exp) => unary_exp.convert(ctx),
-    ///             item::MulExp::Comp(lhs_mul, op, rhs_unary) => {
-    ///                 lhs_mul.convert(ctx);
-    ///                 rhs_unary.convert(ctx);
-    ///                 // assertion
-    ///                 assert!(matches!(*op, BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod));
-    ///                 op.convert(ctx);
-    ///             }
-    ///         }
-    ///     }
-    /// }
-    /// ```
-    fn convert(&self, ctx: &mut AstGenContext) {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         let rhs = ctx.pop_val().unwrap();
         let lhs = ctx.pop_val().unwrap();
 
@@ -709,57 +424,56 @@ impl Convert2Koopa for koopa::ir::BinaryOp {
         {
             let int_lhs = int_lhs.value();
             let int_rhs = int_rhs.value();
-            let result = match self {
-                BinaryOp::NotEq => Some((int_lhs != int_rhs) as i32),
-                BinaryOp::Eq => Some((int_lhs == int_rhs) as i32),
-                BinaryOp::Gt => Some((int_lhs > int_rhs) as i32),
-                BinaryOp::Lt => Some((int_lhs < int_rhs) as i32),
-                BinaryOp::Ge => Some((int_lhs >= int_rhs) as i32),
-                BinaryOp::Le => Some((int_lhs <= int_rhs) as i32),
-                BinaryOp::Add => Some(int_lhs.wrapping_add(int_rhs)),
-                BinaryOp::Sub => Some(int_lhs.wrapping_sub(int_rhs)),
-                BinaryOp::Mul => Some(int_lhs.wrapping_mul(int_rhs)),
+            let res = match self {
+                BinaryOp::NotEq => (int_lhs != int_rhs) as i32,
+                BinaryOp::Eq => (int_lhs == int_rhs) as i32,
+                BinaryOp::Gt => (int_lhs > int_rhs) as i32,
+                BinaryOp::Lt => (int_lhs < int_rhs) as i32,
+                BinaryOp::Ge => (int_lhs >= int_rhs) as i32,
+                BinaryOp::Le => (int_lhs <= int_rhs) as i32,
+                BinaryOp::Add => int_lhs.wrapping_add(int_rhs),
+                BinaryOp::Sub => int_lhs.wrapping_sub(int_rhs),
+                BinaryOp::Mul => int_lhs.wrapping_mul(int_rhs),
                 BinaryOp::Div => {
                     if int_rhs == 0 {
-                        None
+                        return Err(anyhow::anyhow!("Division by zero"));
                     } else {
-                        Some(int_lhs.wrapping_div(int_rhs))
+                        int_lhs.wrapping_div(int_rhs)
                     }
                 }
                 BinaryOp::Mod => {
                     if int_rhs == 0 {
-                        None
+                        return Err(anyhow::anyhow!("Modulo by zero"));
                     } else {
-                        Some(int_lhs.wrapping_rem(int_rhs))
+                        int_lhs.wrapping_rem(int_rhs)
                     }
                 }
-                BinaryOp::And => Some(int_lhs & int_rhs),
-                BinaryOp::Or => Some(int_lhs | int_rhs),
-                BinaryOp::Xor => Some(int_lhs ^ int_rhs),
-                BinaryOp::Shl => Some(int_lhs.wrapping_shl(int_rhs as u32)),
-                BinaryOp::Shr => Some((int_lhs as u32).wrapping_shr(int_rhs as u32) as i32),
-                BinaryOp::Sar => Some(int_lhs.wrapping_shr(int_rhs as u32)),
+                BinaryOp::And => int_lhs & int_rhs,
+                BinaryOp::Or => int_lhs | int_rhs,
+                BinaryOp::Xor => int_lhs ^ int_rhs,
+                BinaryOp::Shl => int_lhs.wrapping_shl(int_rhs as u32),
+                BinaryOp::Shr => (int_lhs as u32).wrapping_shr(int_rhs as u32) as i32,
+                BinaryOp::Sar => int_lhs.wrapping_shr(int_rhs as u32),
             };
 
-            if let Some(res) = result {
-                let val = ctx.new_value().integer(res);
-                ctx.push_val(val);
-                return;
-            }
+            let val = ctx.new_value().integer(res);
+            ctx.push_val(val);
+            return Ok(());
         }
 
         let func_data = ctx.curr_func_data_mut();
         let operation = func_data.dfg_mut().new_value().binary(*self, lhs, rhs);
         ctx.push_val(operation);
         ctx.push_inst(operation);
+        Ok(())
     }
 }
 
-impl Convert2Koopa for item::UnaryOp {
-    fn convert(&self, ctx: &mut AstGenContext) {
+impl ToKoopaIR for item::UnaryOp {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         // if `+` is unary then it will do nothing.
         if matches!(self, item::UnaryOp::Add) {
-            return;
+            return Ok(());
         }
 
         let rhs = ctx.pop_val().unwrap();
@@ -776,7 +490,7 @@ impl Convert2Koopa for item::UnaryOp {
                 item::UnaryOp::Negation => ctx.new_value().integer((integer.value() == 0) as _),
             };
             ctx.push_val(operation);
-            return;
+            return Ok(());
         }
 
         let func_data = ctx.curr_func_data_mut();
@@ -798,5 +512,6 @@ impl Convert2Koopa for item::UnaryOp {
         };
         ctx.push_val(operation);
         ctx.push_inst(operation);
+        Ok(())
     }
 }
