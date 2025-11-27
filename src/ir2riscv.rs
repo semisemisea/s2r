@@ -83,6 +83,6 @@ fn value_repr(val: Value, func_data: &FunctionData, ctx: &mut AsmGenContext) {
             value_repr(ret_val, func_data, ctx);
             ctx.writeln("ret");
         }
-        _ => todo!(),
+        unimplemented_kind => todo!("{unimplemented_kind:?}"),
     }
 }

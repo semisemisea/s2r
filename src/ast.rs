@@ -141,6 +141,7 @@ impl AstGenContext {
         self.program.func(*self.func_stack.last().unwrap())
     }
 
+    #[inline]
     fn push_inst(&mut self, val: Value) {
         let curr_basic_block = self.curr_bb.unwrap();
         self.curr_func_data_mut()
@@ -149,6 +150,15 @@ impl AstGenContext {
             .insts_mut()
             .push_key_back(val)
             .unwrap();
+    }
+
+    fn remove_inst(&mut self, val: Value) -> Option<(Value, layout::InstNode)> {
+        let curr_basic_blcok = self.curr_bb.unwrap();
+        self.curr_func_data_mut()
+            .layout_mut()
+            .bb_mut(curr_basic_blcok)
+            .insts_mut()
+            .remove(&val)
     }
 
     #[inline]
@@ -161,11 +171,12 @@ impl AstGenContext {
         self.val_stack.pop()
     }
 
-    #[inline]
-    fn peek_val(&self) -> Option<&Value> {
-        self.val_stack.last()
-    }
+    // #[inline]
+    // fn peek_val(&self) -> Option<&Value> {
+    //     self.val_stack.last()
+    // }
 
+    #[must_use]
     #[inline]
     fn new_bb(&mut self) -> BlockBuilder<'_> {
         self.curr_func_data_mut().dfg_mut().new_bb()
@@ -179,6 +190,11 @@ impl AstGenContext {
             .unwrap()
     }
 
+    fn remove_bb(&mut self, bb: BasicBlock) -> Option<(BasicBlock, layout::BasicBlockNode)> {
+        self.curr_func_data_mut().layout_mut().bbs_mut().remove(&bb)
+    }
+
+    #[must_use]
     #[inline]
     fn new_value(&mut self) -> LocalBuilder<'_> {
         self.curr_func_data_mut().dfg_mut().new_value()
@@ -189,10 +205,10 @@ impl AstGenContext {
         self.curr_bb.replace(bb)
     }
 
-    #[inline]
-    fn reset_bb(&mut self, bb: Option<BasicBlock>) {
-        self.curr_bb = bb
-    }
+    // #[inline]
+    // fn reset_bb(&mut self, bb: Option<BasicBlock>) {
+    //     self.curr_bb = bb
+    // }
 
     #[inline]
     fn bb_params(&mut self, bb: BasicBlock) -> &[Value] {
@@ -283,9 +299,35 @@ impl Convert2Koopa for item::LOrExp {
                 ctx.push_inst(br);
 
                 // check rhs
-                ctx.set_curr_bb(rhs_bb);
+                let original = ctx.set_curr_bb(rhs_bb).unwrap();
                 land_exp.convert(ctx);
                 let rhs = ctx.pop_val().unwrap();
+
+                // Constant folding
+                if let ValueKind::Integer(int_lhs) = ctx.curr_func_data().dfg().value(lhs).kind()
+                    && let ValueKind::Integer(int_rhs) =
+                        ctx.curr_func_data().dfg().value(rhs).kind()
+                {
+                    // Get lhs and rhs value.
+                    let int_lhs = int_lhs.value();
+                    let int_rhs = int_rhs.value();
+
+                    // remove the previous instruction
+                    ctx.set_curr_bb(original);
+                    ctx.remove_inst(lhs_ne_0);
+                    ctx.remove_inst(br);
+                    ctx.remove_bb(rhs_bb);
+                    ctx.remove_bb(merge_bb);
+
+                    let result = ctx
+                        .curr_func_data_mut()
+                        .dfg_mut()
+                        .new_value()
+                        .integer((int_lhs != 0 || int_rhs != 0) as _);
+                    ctx.push_val(result);
+
+                    return;
+                }
                 let rhs_ne_0 = ctx.new_value().binary(BinaryOp::NotEq, rhs, zero);
                 ctx.push_inst(rhs_ne_0);
 
@@ -334,9 +376,35 @@ impl Convert2Koopa for item::LAndExp {
                 ctx.push_inst(br);
 
                 // check rhs
-                ctx.set_curr_bb(rhs_bb);
+                let original = ctx.set_curr_bb(rhs_bb).unwrap();
                 eq_exp.convert(ctx);
                 let rhs = ctx.pop_val().unwrap();
+
+                // Constant folding
+                if let ValueKind::Integer(int_lhs) = ctx.curr_func_data().dfg().value(lhs).kind()
+                    && let ValueKind::Integer(int_rhs) =
+                        ctx.curr_func_data().dfg().value(rhs).kind()
+                {
+                    // Get lhs and rhs value.
+                    let int_lhs = int_lhs.value();
+                    let int_rhs = int_rhs.value();
+
+                    // remove the previous instruction
+                    ctx.set_curr_bb(original);
+                    ctx.remove_inst(lhs_eq_0);
+                    ctx.remove_inst(br);
+                    ctx.remove_bb(rhs_bb);
+                    ctx.remove_bb(merge_bb);
+
+                    let result = ctx
+                        .curr_func_data_mut()
+                        .dfg_mut()
+                        .new_value()
+                        .integer((int_lhs != 0 && int_rhs != 0) as _);
+                    ctx.push_val(result);
+
+                    return;
+                }
                 let rhs_ne_0 = ctx.new_value().binary(BinaryOp::NotEq, rhs, zero);
                 ctx.push_inst(rhs_ne_0);
 
@@ -562,31 +630,3 @@ impl Convert2Koopa for item::UnaryOp {
         ctx.push_inst(operation);
     }
 }
-
-// pub fn convert() {
-//     let mut program = Program::new();
-//
-//     let main = program.new_func(FunctionData::new("@main".into(), vec![], Type::get_i32()));
-//     let main_data = program.func_mut(main);
-//
-//     let bb = main_data.dfg_mut().new_bb().basic_block(None);
-//     main_data.layout_mut().bbs_mut().push_key_back(bb).unwrap();
-//
-//     let lhs = main_data.dfg_mut().new_value().integer(31);
-//     let rhs = main_data.dfg_mut().new_value().integer(11);
-//     let add = main_data
-//         .dfg_mut()
-//         .new_value()
-//         .binary(BinaryOp::Add, lhs, rhs);
-//     let ret = main_data.dfg_mut().new_value().ret(Some(add));
-//     main_data
-//         .layout_mut()
-//         .bb_mut(bb)
-//         .insts_mut()
-//         .extend([add, ret]);
-//
-//     let mut g = KoopaGenerator::new(Vec::new());
-//     g.generate_on(&program).unwrap();
-//     let text_from_ir = std::str::from_utf8(&g.writer()).unwrap().to_string();
-//     println!("{text_from_ir}");
-// }
