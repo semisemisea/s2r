@@ -131,8 +131,14 @@ impl AstGenContext {
         self.program
     }
 
+    #[inline]
     fn curr_func_data_mut(&mut self) -> &mut FunctionData {
         self.program.func_mut(*self.func_stack.last().unwrap())
+    }
+
+    #[inline]
+    fn curr_func_data(&self) -> &FunctionData {
+        self.program.func(*self.func_stack.last().unwrap())
     }
 
     fn push_inst(&mut self, val: Value) {
@@ -458,6 +464,52 @@ impl Convert2Koopa for koopa::ir::BinaryOp {
     fn convert(&self, ctx: &mut AstGenContext) {
         let rhs = ctx.pop_val().unwrap();
         let lhs = ctx.pop_val().unwrap();
+
+        // Constant folding
+        if let ValueKind::Integer(int_lhs) = ctx.curr_func_data().dfg().value(lhs).kind()
+            && let ValueKind::Integer(int_rhs) = ctx.curr_func_data().dfg().value(rhs).kind()
+        {
+            let int_lhs = int_lhs.value();
+            let int_rhs = int_rhs.value();
+            let result = match self {
+                BinaryOp::NotEq => Some((int_lhs != int_rhs) as i32),
+                BinaryOp::Eq => Some((int_lhs == int_rhs) as i32),
+                BinaryOp::Gt => Some((int_lhs > int_rhs) as i32),
+                BinaryOp::Lt => Some((int_lhs < int_rhs) as i32),
+                BinaryOp::Ge => Some((int_lhs >= int_rhs) as i32),
+                BinaryOp::Le => Some((int_lhs <= int_rhs) as i32),
+                BinaryOp::Add => Some(int_lhs.wrapping_add(int_rhs)),
+                BinaryOp::Sub => Some(int_lhs.wrapping_sub(int_rhs)),
+                BinaryOp::Mul => Some(int_lhs.wrapping_mul(int_rhs)),
+                BinaryOp::Div => {
+                    if int_rhs == 0 {
+                        None
+                    } else {
+                        Some(int_lhs.wrapping_div(int_rhs))
+                    }
+                }
+                BinaryOp::Mod => {
+                    if int_rhs == 0 {
+                        None
+                    } else {
+                        Some(int_lhs.wrapping_rem(int_rhs))
+                    }
+                }
+                BinaryOp::And => Some(int_lhs & int_rhs),
+                BinaryOp::Or => Some(int_lhs | int_rhs),
+                BinaryOp::Xor => Some(int_lhs ^ int_rhs),
+                BinaryOp::Shl => Some(int_lhs.wrapping_shl(int_rhs as u32)),
+                BinaryOp::Shr => Some((int_lhs as u32).wrapping_shr(int_rhs as u32) as i32),
+                BinaryOp::Sar => Some(int_lhs.wrapping_shr(int_rhs as u32)),
+            };
+
+            if let Some(res) = result {
+                let val = ctx.new_value().integer(res);
+                ctx.push_val(val);
+                return;
+            }
+        }
+
         let func_data = ctx.curr_func_data_mut();
         let operation = func_data.dfg_mut().new_value().binary(*self, lhs, rhs);
         ctx.push_val(operation);
@@ -467,23 +519,39 @@ impl Convert2Koopa for koopa::ir::BinaryOp {
 
 impl Convert2Koopa for item::UnaryOp {
     fn convert(&self, ctx: &mut AstGenContext) {
+        // if `+` is unary then it will do nothing.
+        if matches!(self, item::UnaryOp::Add) {
+            return;
+        }
+
         let rhs = ctx.pop_val().unwrap();
+
+        //Constant folding
+        let rhs_val = ctx.curr_func_data().dfg().value(rhs);
+        if matches!(rhs_val.kind(), ValueKind::Integer(_)) {
+            let ValueKind::Integer(integer) = rhs_val.kind().clone() else {
+                unreachable!()
+            };
+            let operation = match self {
+                item::UnaryOp::Add => unreachable!(),
+                item::UnaryOp::Minus => ctx.new_value().integer(-integer.value()),
+                item::UnaryOp::Negation => ctx.new_value().integer((integer.value() == 0) as _),
+            };
+            ctx.push_val(operation);
+            return;
+        }
+
         let func_data = ctx.curr_func_data_mut();
+        let zero = func_data.dfg_mut().new_value().integer(0);
         let operation = match self {
-            item::UnaryOp::Add => {
-                ctx.push_val(rhs);
-                return;
-            }
+            item::UnaryOp::Add => unreachable!(),
             item::UnaryOp::Minus => {
-                let zero = func_data.dfg_mut().new_value().integer(0);
                 func_data
                     .dfg_mut()
                     .new_value()
                     .binary(BinaryOp::Sub, zero, rhs)
             }
             item::UnaryOp::Negation => {
-                let rhs_val = func_data.dfg().value(rhs);
-                let zero = func_data.dfg_mut().new_value().integer(0);
                 func_data
                     .dfg_mut()
                     .new_value()

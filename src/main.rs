@@ -2,6 +2,7 @@ use lalrpop_util::lalrpop_mod;
 
 mod ast;
 mod ir2riscv;
+mod riscv_infra;
 use ast::Convert2Koopa;
 
 use crate::{
