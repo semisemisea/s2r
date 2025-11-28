@@ -1,14 +1,6 @@
-use crate::ast_infra::{AstGenContext, item};
-use anyhow::{Result, anyhow};
-use koopa::ir::{builder_traits::*, *};
-
-impl item::FuncType {
-    fn get_type(&self) -> Type {
-        match self {
-            item::FuncType::Int => Type::get_i32(),
-        }
-    }
-}
+use crate::ast_infra::{AstGenContext, Symbol, item};
+use anyhow::{Result, anyhow, ensure};
+use koopa::ir::{builder::EntityInfoQuerier, builder_traits::*, *};
 
 /// Define how a AST node should convert to Koopa IR.
 ///
@@ -31,7 +23,7 @@ impl ToKoopaIR for item::FuncDef {
         let func = ctx.program.new_func(FunctionData::new(
             format!("@{}", self.ident),
             vec![],
-            self.func_type.get_type(),
+            self.func_type.clone(),
         ));
         ctx.push_func(func);
         let func_data = ctx.curr_func_data_mut();
@@ -82,10 +74,13 @@ impl ToKoopaIR for item::Decl {
 
 impl ToKoopaIR for item::ConstDecl {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        assert!(matches!(self.btype, item::BType::Int));
-        for const_def in self.const_defs.iter() {
-            const_def.convert(ctx)?;
-        }
+        ensure!(
+            self.btype.is_i32(),
+            "Unknown type for constant declaration."
+        );
+        self.const_defs
+            .iter()
+            .try_for_each(|const_def| const_def.convert(ctx))?;
         Ok(())
     }
 }
@@ -95,10 +90,11 @@ impl ToKoopaIR for item::ConstDef {
         // Get the init val
         self.const_init_val.convert(ctx)?;
         let init_val = ctx.pop_val().unwrap();
-        let ValueKind::Integer(init_val) = ctx.curr_func_data().dfg().value(init_val).kind() else {
+        // Not a constant val
+        if !ctx.curr_func_data().dfg().value(init_val).ty().is_i32() {
             return Err(anyhow!("Value can't be calculated at compile time."));
         };
-        ctx.insert_const(self.ident.clone(), init_val.value());
+        ctx.insert_const(self.ident.clone(), init_val)?;
         Ok(())
     }
 }
@@ -121,15 +117,62 @@ impl ToKoopaIR for item::ConstExp {
 
 impl ToKoopaIR for item::VarDecl {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        ensure!(self.btype.is_i32(), "Unknown type for variable declaration");
+        ctx.set_def_type(self.btype.clone());
+        self.var_defs
+            .iter()
+            .try_for_each(|var_def| var_def.convert(ctx))?;
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::VarDef {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        let ty = ctx.curr_def_type().unwrap();
+        // Allocate a target type of variable.
+        let alloc_var = ctx.new_value().alloc(ty);
+        ctx.push_inst(alloc_var);
+        if let Some(ref init_val) = self.init_val {
+            init_val.convert(ctx)?;
+            // store the calculated value.
+            let val = ctx.pop_val().unwrap();
+            let store = ctx.new_value().store(val, alloc_var);
+            ctx.push_inst(store);
+        }
+        ctx.insert_var(self.ident.clone(), alloc_var)?;
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::InitVal {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        self.exp.convert(ctx)?;
         Ok(())
     }
 }
 
 impl ToKoopaIR for item::Stmt {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        // let func_data = ctx.program.func_mut(*ctx.func_stack.last().unwrap());
         match self {
-            item::Stmt::Assign(l_val, exp) => todo!(),
+            item::Stmt::Assign(l_val, exp) => {
+                if ctx.is_constant(l_val) {
+                    return Err(anyhow!("Can't modify a constant."));
+                }
+                l_val.convert(ctx)?;
+                let lhs_l_val = ctx.pop_val().unwrap();
+                exp.convert(ctx)?;
+                let rhs_exp = ctx.pop_val().unwrap();
+
+                // Compile time type-check.
+                let lhs_ptr_type = ctx.new_value().value_type(lhs_l_val);
+                let rhs_exp_type = ctx.new_value().value_type(rhs_exp);
+                ensure!(
+                    Type::get_pointer(rhs_exp_type.clone()) == lhs_ptr_type.clone(),
+                    "Type not match. {rhs_exp_type} can't store in {lhs_ptr_type}"
+                );
+                let store = ctx.new_value().store(rhs_exp, lhs_l_val);
+                ctx.push_inst(store);
+            }
             item::Stmt::Return(ret_exp) => {
                 ret_exp.convert(ctx)?;
                 let v_ret = ctx.pop_val();
@@ -382,8 +425,6 @@ impl ToKoopaIR for item::UnaryExp {
 }
 
 impl ToKoopaIR for item::PrimaryExp {
-    /// Grammar:
-    /// PrimaryExp ::= "(" Exp ")" | Number;
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
             item::PrimaryExp::Exp(exp) => exp.convert(ctx)?,
@@ -392,7 +433,21 @@ impl ToKoopaIR for item::PrimaryExp {
                 let num = func_data.dfg_mut().new_value().integer(*num);
                 ctx.push_val(num);
             }
-            item::PrimaryExp::LVal(l_val) => l_val.convert(ctx)?,
+            // LVal on the right side.
+            // Meaning it's not defining but using a variable.
+            item::PrimaryExp::LVal(l_val) => {
+                let val = match ctx.get_symbol(&l_val.ident).unwrap() {
+                    // If it's a constant, because we store the value so we directly pull it out.
+                    Symbol::Constant(const_val) => const_val,
+                    // If it's a variable, because we store the pointer so we load it and pull out.
+                    Symbol::Variable(var_ptr) => {
+                        let load = ctx.new_value().load(var_ptr);
+                        ctx.push_inst(load);
+                        load
+                    }
+                };
+                ctx.push_val(val);
+            }
         }
         Ok(())
     }
@@ -400,10 +455,14 @@ impl ToKoopaIR for item::PrimaryExp {
 
 impl ToKoopaIR for item::LVal {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        let val = ctx
-            .get_const(&self.ident)
+        let symbol = ctx
+            .get_symbol(&self.ident)
             .ok_or(anyhow!("Variable {} not exists.", &*self.ident))?;
-        let val = ctx.new_value().integer(val);
+        let val = match symbol {
+            crate::ast_infra::Symbol::Constant(const_val) => const_val,
+            crate::ast_infra::Symbol::Variable(p_val) => p_val,
+        };
+        // let val = ctx.new_value().integer(val);
         ctx.push_val(val);
         Ok(())
     }

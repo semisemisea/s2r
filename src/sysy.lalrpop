@@ -1,5 +1,6 @@
 use crate::ast_infra::item::*;
 use koopa::ir::BinaryOp;
+use koopa::ir::Type;
 
 grammar;
 
@@ -24,7 +25,7 @@ Decl: Decl = {
     <v_decl: VarDecl> => Decl::VarDecl(v_decl),
 };
 
-BType: BType = "int" => BType::Int;
+BType: Type = "int" => Type::get_i32();
 
 ConstDecl: ConstDecl = "const" <btype: BType> <const_defs: Comma<ConstDef>> ";" => ConstDecl { 
     btype,
@@ -53,7 +54,7 @@ FuncDef: FuncDef = {
   }
 };
 
-FuncType: FuncType = "int" => FuncType::Int;
+FuncType: Type = "int" => Type::get_i32();
 
 Block: Block = "{" <block_items: BlockItem*> "}" => Block {block_items};
 

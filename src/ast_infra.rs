@@ -1,7 +1,7 @@
 #[allow(unused)]
 pub mod item {
     use super::Ident;
-    use koopa::ir::BinaryOp;
+    use koopa::ir::{BinaryOp, Type};
 
     /// CompUnit ::= FuncDef;
     ///
@@ -24,10 +24,7 @@ pub mod item {
     /// FuncType ::= "int";
     ///
     /// The return type of a function.
-    #[derive(Debug)]
-    pub enum FuncType {
-        Int,
-    }
+    pub type FuncType = Type;
 
     /// Block ::= "{" {BlockItem} "}";
     ///
@@ -67,10 +64,7 @@ pub mod item {
     /// BType ::= "int";
     ///
     /// The base type for variables and constants.
-    #[derive(Debug)]
-    pub enum BType {
-        Int,
-    }
+    pub type BType = Type;
 
     /// ConstDef ::= IDENT "=" ConstInitVal;
     ///
@@ -237,6 +231,8 @@ pub mod item {
     pub type Number = i32;
 }
 
+use anyhow::{Result, anyhow};
+use item::*;
 use koopa::ir::{builder::*, *};
 use std::collections::{
     HashMap,
@@ -244,11 +240,10 @@ use std::collections::{
 };
 
 pub type Ident = std::rc::Rc<str>;
-pub type ConstantType = i32;
-pub type VariableType = Value;
 
+#[derive(Debug, Clone, Copy)]
 pub enum Symbol {
-    Constant(ConstantType),
+    Constant(Value),
     Variable(Value),
 }
 
@@ -258,6 +253,7 @@ pub struct AstGenContext {
     val_stack: Vec<Value>,
     curr_bb: Option<BasicBlock>,
     symbol_table: HashMap<Ident, Symbol>,
+    def_type: Option<Type>,
 }
 
 impl AstGenContext {
@@ -268,16 +264,17 @@ impl AstGenContext {
             val_stack: Vec::new(),
             curr_bb: None,
             symbol_table: HashMap::new(),
+            def_type: None,
         }
     }
 
     /// Insert a identifier-value pair to a table.
     ///
-    /// Panic: when redefine a variable.
+    /// Err(()): when redefine a variable.
     #[inline]
-    pub fn insert_const(&mut self, ident: Ident, val: i32) -> Result<(), ()> {
+    pub fn insert_const(&mut self, ident: Ident, val: Value) -> Result<()> {
         match self.symbol_table.entry(ident) {
-            Occupied(_) => Err(()),
+            Occupied(_) => Err(anyhow!("Redefine the variable")),
             Vacant(e) => {
                 e.insert(Symbol::Constant(val));
                 Ok(())
@@ -285,7 +282,26 @@ impl AstGenContext {
         }
     }
 
-    pub fn get_const(&self, ident: &Ident) -> Option<ConstantType> {
+    #[inline]
+    pub fn insert_var(&mut self, ident: Ident, val: Value) -> Result<()> {
+        match self.symbol_table.entry(ident) {
+            Occupied(_) => Err(anyhow!("Redefine the variable")),
+            Vacant(e) => {
+                e.insert(Symbol::Variable(val));
+                Ok(())
+            }
+        }
+    }
+
+    #[inline]
+    pub fn get_symbol(&self, ident: &Ident) -> Option<Symbol> {
+        // self.symbol_table
+        //     .iter()
+        //     .for_each(|(a, b)| println!("{}: {:?}", a, b));
+        self.symbol_table.get(ident).copied()
+    }
+
+    pub fn get_const(&self, ident: &Ident) -> Option<Value> {
         match self.symbol_table.get(ident) {
             Some(Symbol::Constant(ret)) => Some(*ret),
             _ => None,
@@ -389,5 +405,28 @@ impl AstGenContext {
     #[inline]
     pub fn bb_params(&mut self, bb: BasicBlock) -> &[Value] {
         self.curr_func_data_mut().dfg().bb(bb).params()
+    }
+
+    #[inline]
+    pub fn set_def_type(&mut self, ty: Type) -> Option<Type> {
+        self.def_type.replace(ty)
+    }
+
+    #[inline]
+    pub fn reset_def_type(&mut self, ty: Option<Type>) {
+        self.def_type = ty
+    }
+
+    #[inline]
+    pub fn curr_def_type(&self) -> Option<Type> {
+        self.def_type.clone()
+    }
+
+    #[inline]
+    pub fn is_constant(&self, l_val: &LVal) -> bool {
+        matches!(
+            self.symbol_table.get(&l_val.ident),
+            Some(Symbol::Constant(_))
+        )
     }
 }

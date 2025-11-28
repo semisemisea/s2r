@@ -28,10 +28,10 @@ fn main() -> std::io::Result<()> {
     let ast = sysy::CompUnitParser::new().parse(&input).unwrap();
     let mut ctx = AstGenContext::new();
     // #[cfg(feature = "DEBUG")]
-    {
-        println!("{:#?}", ast);
-    }
-    ast.convert(&mut ctx);
+    if let Err(e) = ast.convert(&mut ctx) {
+        eprintln!("Encounter error: {e}");
+        std::process::exit(1);
+    };
     match mode.as_str() {
         "-koopa" => {
             let mut g = koopa::back::KoopaGenerator::new(Vec::new());
