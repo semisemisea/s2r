@@ -145,9 +145,9 @@ impl ToKoopaIR for item::VarDef {
 }
 
 impl ToKoopaIR for item::InitVal {
+    #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        self.exp.convert(ctx)?;
-        Ok(())
+        self.exp.convert(ctx)
     }
 }
 
@@ -186,9 +186,9 @@ impl ToKoopaIR for item::Stmt {
 }
 
 impl ToKoopaIR for item::Exp {
+    #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        self.lor_exp.convert(ctx)?;
-        Ok(())
+        self.lor_exp.convert(ctx)
     }
 }
 
@@ -351,22 +351,21 @@ impl ToKoopaIR for item::LAndExp {
 impl ToKoopaIR for item::EqExp {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::EqExp::RelExp(rel_exp) => rel_exp.convert(ctx)?,
+            item::EqExp::RelExp(rel_exp) => rel_exp.convert(ctx),
             item::EqExp::Comp(lhs_eq, op, rhs_rel) => {
                 lhs_eq.convert(ctx)?;
                 rhs_rel.convert(ctx)?;
                 assert!(matches!(*op, BinaryOp::Eq | BinaryOp::NotEq));
-                op.convert(ctx)?;
+                op.convert(ctx)
             }
         }
-        Ok(())
     }
 }
 
 impl ToKoopaIR for item::RelExp {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::RelExp::AddExp(add_exp) => add_exp.convert(ctx)?,
+            item::RelExp::AddExp(add_exp) => add_exp.convert(ctx),
             item::RelExp::Comp(lhs_rel, op, rhs_add) => {
                 lhs_rel.convert(ctx)?;
                 rhs_add.convert(ctx)?;
@@ -374,53 +373,49 @@ impl ToKoopaIR for item::RelExp {
                     *op,
                     BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
                 ));
-                op.convert(ctx)?;
+                op.convert(ctx)
             }
         }
-        Ok(())
     }
 }
 
 impl ToKoopaIR for item::AddExp {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::AddExp::MulExp(mul_exp) => mul_exp.convert(ctx)?,
+            item::AddExp::MulExp(mul_exp) => mul_exp.convert(ctx),
             item::AddExp::Comp(lhs_add, op, rhs_mul) => {
                 lhs_add.convert(ctx)?;
                 rhs_mul.convert(ctx)?;
                 assert!(matches!(*op, BinaryOp::Sub | BinaryOp::Add));
-                op.convert(ctx)?;
+                op.convert(ctx)
             }
         }
-        Ok(())
     }
 }
 
 impl ToKoopaIR for item::MulExp {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::MulExp::UnaryExp(unary_exp) => unary_exp.convert(ctx)?,
+            item::MulExp::UnaryExp(unary_exp) => unary_exp.convert(ctx),
             item::MulExp::Comp(lhs_mul, op, rhs_unary) => {
                 lhs_mul.convert(ctx)?;
                 rhs_unary.convert(ctx)?;
                 assert!(matches!(*op, BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod));
-                op.convert(ctx)?;
+                op.convert(ctx)
             }
         }
-        Ok(())
     }
 }
 
 impl ToKoopaIR for item::UnaryExp {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::UnaryExp::PrimaryExp(exp) => exp.convert(ctx)?,
+            item::UnaryExp::PrimaryExp(exp) => exp.convert(ctx),
             item::UnaryExp::Unary(unary_op, unary_exp) => {
                 unary_exp.convert(ctx)?;
-                unary_op.convert(ctx)?;
+                unary_op.convert(ctx)
             }
         }
-        Ok(())
     }
 }
 

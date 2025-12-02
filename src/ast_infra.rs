@@ -301,12 +301,12 @@ impl AstGenContext {
         self.symbol_table.get(ident).copied()
     }
 
-    pub fn get_const(&self, ident: &Ident) -> Option<Value> {
-        match self.symbol_table.get(ident) {
-            Some(Symbol::Constant(ret)) => Some(*ret),
-            _ => None,
-        }
-    }
+    // pub fn get_const(&self, ident: &Ident) -> Option<Value> {
+    //     match self.symbol_table.get(ident) {
+    //         Some(Symbol::Constant(ret)) => Some(*ret),
+    //         _ => None,
+    //     }
+    // }
 
     #[inline]
     pub fn push_func(&mut self, func: Function) {
@@ -412,10 +412,10 @@ impl AstGenContext {
         self.def_type.replace(ty)
     }
 
-    #[inline]
-    pub fn reset_def_type(&mut self, ty: Option<Type>) {
-        self.def_type = ty
-    }
+    // #[inline]
+    // pub fn reset_def_type(&mut self, ty: Option<Type>) {
+    //     self.def_type = ty
+    // }
 
     #[inline]
     pub fn curr_def_type(&self) -> Option<Type> {

@@ -17,4 +17,3 @@ num_enum = "0.7.5"
 thiserror = "2.0.17"
 
 [features]
-DEBUG = []
