@@ -238,6 +238,15 @@ pub enum RiscvInst {
     /// Return from function: `ret`
     /// Returns from current function.
     ret,
+    /// Jump to label: `j label`
+    /// Jump to a label unconditionally.
+    j { label: String },
+    /// Branch if equal to zero: `beqz rs, label`
+    /// Branches to label if `rs == 0`
+    beqz { rs: Register, label: String },
+    /// Branch if not equal to zero: `bnez rs, label`
+    /// Branches to label if `rs != 0`
+    bnez { rs: Register, label: String },
 }
 
 impl std::fmt::Display for RiscvInst {
@@ -272,6 +281,9 @@ impl std::fmt::Display for RiscvInst {
             RiscvInst::bltu { rs1, rs2, offset } => write!(f, "bltu  {}, {}, {}", rs1, rs2, offset),
             RiscvInst::bgeu { rs1, rs2, offset } => write!(f, "bgeu  {}, {}, {}", rs1, rs2, offset),
             RiscvInst::ret => write!(f, "ret"),
+            RiscvInst::j { label } => write!(f, "j     {}", label),
+            RiscvInst::beqz { rs, label } => write!(f, "beqz  {}, {}", rs, label),
+            RiscvInst::bnez { rs, label } => write!(f, "bnez  {}, {}", rs, label),
         }
     }
 }
@@ -333,6 +345,7 @@ pub struct AsmGenContext {
     stack_slots: HashMap<Value, usize>,
     reg_pool: RegisterManager,
     curr_inst: Option<Value>,
+    epilogue_stack: Vec<Epilogue>,
 }
 
 pub trait GenerateAsm {
@@ -348,20 +361,25 @@ impl AsmGenContext {
             stack_slots: HashMap::new(),
             reg_pool: RegisterManager::new(),
             curr_inst: None,
+            epilogue_stack: Vec::new(),
         }
     }
 
-    // pub fn stack_slot_allocation(&mut self, program: &Program, val: Value) {
-    //     let data = self.curr_func_data(program).dfg().value(val);
-    //     match data.kind() {
-    //         ValueKind::Alloc(alloc) => alloc.
-    //     }
-    // }
+    pub fn bb_params<'a>(&self, bb: BasicBlock, program: &'a Program) -> &'a [Value] {
+        self.curr_func_data(program).dfg().bb(bb).params()
+    }
 
     pub fn get_bb_name(&self, bb: BasicBlock, program: &Program) -> String {
         let curr_func = self.curr_func_data(program);
-        let func_name = curr_func.name();
-        let bb_name = curr_func.dfg().bb(bb).name().as_ref().unwrap().clone();
+        let func_name = curr_func.name().strip_prefix("@").unwrap();
+        let bb_name = curr_func
+            .dfg()
+            .bb(bb)
+            .name()
+            .as_ref()
+            .unwrap()
+            .strip_prefix("%")
+            .unwrap();
         format!(".L_{}_{}", func_name, bb_name)
     }
 
@@ -413,8 +431,7 @@ impl AsmGenContext {
         self.buf += format!("{}\n", inst).as_str();
     }
 
-    #[must_use = "Function always has a epilogue."]
-    pub fn prologue(&mut self, offset: usize) -> Epilogue {
+    pub fn prologue(&mut self, offset: usize) {
         import!();
         // According to RISC-V, sp_offset should be aligned with 16.
         let offset = if (offset & 0x0F) != 0 {
@@ -441,10 +458,10 @@ impl AsmGenContext {
                 imm12: -offset,
             });
         }
-        Epilogue {
+        self.epilogue_stack.push(Epilogue {
             offset,
             done: false,
-        }
+        })
     }
 
     #[inline]
@@ -469,7 +486,7 @@ impl AsmGenContext {
         program.func(*self.curr_func_hanlde())
     }
 
-    pub fn helper(&mut self, program: &Program, val: Value) {
+    pub fn load_to_register(&mut self, program: &Program, val: Value) {
         let data = self.curr_func_data(program).dfg().value(val);
         if let ValueKind::Integer(int) = data.kind() {
             self.load_imm(int.value());
@@ -481,7 +498,7 @@ impl AsmGenContext {
         }
     }
 
-    pub fn save_at_curr_inst(&mut self) {
+    pub fn save_word_at_curr_inst(&mut self) {
         import!();
         let curr_inst = self.curr_inst.unwrap();
         let offset = self.get_inst_offset(curr_inst).unwrap() as i32;
@@ -498,13 +515,14 @@ impl AsmGenContext {
     }
 }
 
+#[derive(Clone)]
 pub struct Epilogue {
     offset: i32,
     done: bool,
 }
 
 impl Epilogue {
-    pub fn finish(mut self, ctx: &mut AsmGenContext) {
+    pub fn finish(&mut self, ctx: &mut AsmGenContext) {
         import!();
         self.done = true;
         if (self.offset >> 12) != 0 {
@@ -660,5 +678,26 @@ impl AsmGenContext {
         import!();
         let source = self.reg_pool.take();
         self.write_inst(mv { rd: a0, rs: source });
+        self.epilogue_stack.last().unwrap().clone().finish(self);
+    }
+
+    pub fn jump(&mut self, bb: BasicBlock, program: &Program) {
+        import!();
+        self.write_inst(j {
+            label: self.get_bb_name(bb, program),
+        });
+    }
+
+    pub fn if_jump(&mut self, true_bb: BasicBlock, false_bb: BasicBlock, program: &Program) {
+        import!();
+        let cond_reg = self.reg_pool.take();
+        self.write_inst(bnez {
+            rs: cond_reg,
+            label: self.get_bb_name(true_bb, program),
+        });
+        self.write_inst(beqz {
+            rs: cond_reg,
+            label: self.get_bb_name(false_bb, program),
+        });
     }
 }

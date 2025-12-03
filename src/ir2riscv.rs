@@ -16,46 +16,37 @@ impl GenerateAsm for FunctionData {
         ctx.incr_indent();
         // we first figure out how much the stack size should be.
         let mut sp_offset = 0;
-        for (&_bb, node) in self.layout().bbs() {
-            sp_offset += (self.dfg().bb(_bb).params())
-                .iter()
-                .map(|&param| inst_size(self, param))
-                .sum::<usize>();
-            sp_offset += node
-                .insts()
-                .keys()
-                .map(|&inst| {
-                    #[cfg(debug_assertions)]
-                    eprintln!(
-                        "{inst:?} {:?} {}",
-                        self.dfg().value(inst).kind(),
-                        self.dfg().value(inst).ty().size()
-                    );
-                    inst_size(self, inst)
-                })
-                .sum::<usize>();
+        for (&bb, node) in self.layout().bbs() {
+            let insts_iter = self.dfg().bb(bb).params().iter().chain(node.insts().keys());
+            for &inst in insts_iter {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "{inst:?} {:?} {}",
+                    self.dfg().value(inst).kind(),
+                    self.dfg().value(inst).ty().size()
+                );
+                // give each instruction a stack slot.
+                let single_inst_offset = inst_size(self, inst);
+                if single_inst_offset != 0 {
+                    ctx.insert_inst(inst, sp_offset);
+                }
+                sp_offset += single_inst_offset;
+            }
         }
 
         #[cfg(debug_assertions)]
         eprintln!("sp_offset: {sp_offset}");
-        let epilogue = ctx.prologue(sp_offset);
+        ctx.prologue(sp_offset);
 
+        // then handle each instruction.
         for (&bb, node) in self.layout().bbs() {
-            // then handle each instruction.
             if self.dfg().bb(bb).name().as_ref().unwrap() != "%entry" {
                 ctx.decr_indent();
-                ctx.writeln(&ctx.get_bb_name(bb, program));
+                ctx.writeln(&format!("{}:", ctx.get_bb_name(bb, program)));
                 ctx.incr_indent();
             }
-            let mut acc_offset = 0;
-            for inst in node.insts().keys() {
-                // give instruction a stack slot.
-                let single_inst_offset = inst_size(self, *inst);
-                if single_inst_offset != 0 {
-                    ctx.insert_inst(*inst, acc_offset);
-                }
-                acc_offset += single_inst_offset;
-
+            let insts_iter = /* self.dfg().bb(bb).params().iter().chain( */node.insts().keys()/* ) */;
+            for inst in insts_iter {
                 // update the current instruction.
                 ctx.curr_inst_mut().replace(*inst);
                 inst.generate(program, ctx)?;
@@ -63,7 +54,7 @@ impl GenerateAsm for FunctionData {
         }
 
         // add epilogue to the funciton at the end
-        epilogue.finish(ctx);
+        // epilogue.finish(ctx);
         ctx.decr_indent();
         Ok(())
     }
@@ -76,12 +67,21 @@ impl GenerateAsm for Value {
             ValueKind::Alloc(alloc) => alloc.generate(program, ctx),
             ValueKind::Store(store) => store.generate(program, ctx),
             ValueKind::Load(load) => load.generate(program, ctx),
-            ValueKind::Branch(_branch) => todo!(),
-            ValueKind::Jump(_jump) => todo!(),
+            ValueKind::Branch(branch) => branch.generate(program, ctx),
+            ValueKind::Jump(jump) => jump.generate(program, ctx),
             ValueKind::Return(ret) => ret.generate(program, ctx),
             ValueKind::Binary(op) => op.generate(program, ctx),
+            ValueKind::BlockArgRef(block_arg_ref) => block_arg_ref.generate(program, ctx),
             _ => todo!(),
         }
+    }
+}
+
+impl GenerateAsm for values::BlockArgRef {
+    fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
+        let curr_inst = ctx.curr_inst_mut().unwrap();
+        ctx.load_to_register(program, curr_inst);
+        Ok(())
     }
 }
 
@@ -95,7 +95,23 @@ impl GenerateAsm for Value {
 /// }
 ///```
 impl GenerateAsm for values::Branch {
-    fn generate(&self, _program: &Program, _ctx: &mut AsmGenContext) -> anyhow::Result<()> {
+    fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
+        ctx.load_to_register(program, self.cond());
+        let true_args_and_params = self
+            .true_args()
+            .iter()
+            .zip(ctx.bb_params(self.true_bb(), program));
+        let false_args_and_params = self
+            .false_args()
+            .iter()
+            .zip(ctx.bb_params(self.false_bb(), program));
+        true_args_and_params
+            .chain(false_args_and_params)
+            .for_each(|(&arg, &param)| {
+                ctx.load_to_register(program, arg);
+                ctx.save_word_at_inst(param);
+            });
+        ctx.if_jump(self.true_bb(), self.false_bb(), program);
         Ok(())
     }
 }
@@ -107,7 +123,16 @@ impl GenerateAsm for values::Branch {
 /// }
 ///```
 impl GenerateAsm for values::Jump {
-    fn generate(&self, _program: &Program, _ctx: &mut AsmGenContext) -> anyhow::Result<()> {
+    fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
+        let args_and_params = self
+            .args()
+            .iter()
+            .zip(ctx.bb_params(self.target(), program));
+        args_and_params.for_each(|(&arg, &param)| {
+            ctx.load_to_register(program, arg);
+            ctx.save_word_at_inst(param);
+        });
+        ctx.jump(self.target(), program);
         Ok(())
     }
 }
@@ -115,9 +140,7 @@ impl GenerateAsm for values::Jump {
 impl GenerateAsm for values::Return {
     fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
         if let Some(ret_val) = self.value() {
-            ctx.helper(program, ret_val);
-            // let offset = ctx.get_inst_offset(ret_val).unwrap() as i32;
-            // ctx.load_word(offset);
+            ctx.load_to_register(program, ret_val);
             ctx.ret();
         }
         Ok(())
@@ -126,10 +149,10 @@ impl GenerateAsm for values::Return {
 
 impl GenerateAsm for values::Binary {
     fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
-        ctx.helper(program, self.lhs());
-        ctx.helper(program, self.rhs());
+        ctx.load_to_register(program, self.lhs());
+        ctx.load_to_register(program, self.rhs());
         ctx.binary_op(self.op());
-        ctx.save_at_curr_inst();
+        ctx.save_word_at_curr_inst();
         Ok(())
     }
 }
@@ -145,7 +168,7 @@ impl GenerateAsm for values::Load {
         // need to optimize.
         let offset = ctx.get_inst_offset(self.src()).unwrap() as i32;
         ctx.load_word(offset);
-        ctx.save_at_curr_inst();
+        ctx.save_word_at_curr_inst();
         Ok(())
     }
 }
@@ -168,7 +191,7 @@ impl GenerateAsm for values::Alloc {
 impl GenerateAsm for values::Store {
     fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
         // store the value where it's located.
-        ctx.helper(program, self.value());
+        ctx.load_to_register(program, self.value());
         ctx.save_word_at_inst(self.dest());
         Ok(())
     }

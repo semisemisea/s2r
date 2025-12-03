@@ -32,13 +32,19 @@ fn main() -> std::io::Result<()> {
         "-koopa" => {
             let mut g = koopa::back::KoopaGenerator::new(Vec::new());
             g.generate_on(&ir_ctx.end()).unwrap();
-            let text_from_ir = std::str::from_utf8(&g.writer()).unwrap().to_string();
-            eprintln!("{text_from_ir}");
-            std::fs::write(output, text_from_ir)?;
+            let ir_text = std::str::from_utf8(&g.writer()).unwrap().to_string();
+            eprintln!("{ir_text}");
+            std::fs::write(output, ir_text)?;
         }
         "-riscv" => {
+            let mut g = koopa::back::KoopaGenerator::new(Vec::new());
+            g.generate_on(&ir_ctx.end()).unwrap();
+            let ir_text = std::str::from_utf8(&g.writer()).unwrap().to_string();
+            let driver = koopa::front::Driver::from(ir_text);
+            // Because we want name to be unique :)
+            let program = driver.generate_program().unwrap();
             let mut asm_ctx = AsmGenContext::new();
-            asm_ctx.generate(&ir_ctx.program).unwrap();
+            asm_ctx.generate(&program).unwrap();
             std::fs::write(output.clone(), asm_ctx.end())?;
         }
         invalid_mode => {
