@@ -1,12 +1,12 @@
 use lalrpop_util::lalrpop_mod;
 
 mod ast;
-mod ast_infra;
+mod ast_utils;
 mod ir2riscv;
-mod riscv_infra;
+mod riscv_utils;
 use ast::ToKoopaIR;
 
-use crate::{ast_infra::AstGenContext, riscv_infra::AsmGenContext};
+use crate::{ast_utils::AstGenContext, riscv_utils::AsmGenContext};
 
 lalrpop_mod!(sysy);
 

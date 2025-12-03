@@ -1,5 +1,5 @@
-use crate::ast_infra::{AstGenContext, Symbol, item};
-use anyhow::{Result, anyhow, ensure};
+use crate::ast_utils::{AstGenContext, Symbol, item};
+use anyhow::{Result, anyhow, bail, ensure};
 use koopa::ir::{builder::EntityInfoQuerier, builder_traits::*, *};
 
 /// Define how a AST node should convert to Koopa IR.
@@ -20,22 +20,27 @@ impl ToKoopaIR for item::CompUnit {
 
 impl ToKoopaIR for item::FuncDef {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        // Register the function to get handle
         let func = ctx.program.new_func(FunctionData::new(
             format!("@{}", self.ident),
             vec![],
             self.func_type.clone(),
         ));
+        // Prologue
+        // - Add function to the stack
+        // - Insert the "entry" basic block and save it.
+        // - Increse the scope depth.
         ctx.push_func(func);
-        let func_data = ctx.curr_func_data_mut();
-        let bb = func_data
-            .dfg_mut()
-            .new_bb()
-            .basic_block(Some("%entry".into()));
-        func_data.layout_mut().bbs_mut().push_key_back(bb).unwrap();
-        let prev_bb = ctx.set_curr_bb(bb);
+        let entry_bb = ctx.add_entry_bb();
+        let prev_bb = ctx.set_curr_bb(entry_bb);
+
+        // Recursive conversion.
         self.block.convert(ctx)?;
+
+        // Epilogue
         ctx.pop_func();
         ctx.reset_bb(prev_bb);
+
         Ok(())
     }
 }
@@ -43,9 +48,11 @@ impl ToKoopaIR for item::FuncDef {
 impl ToKoopaIR for item::Block {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        for block_item in self.block_items.iter() {
-            block_item.convert(ctx)?;
-        }
+        ctx.add_scope();
+        self.block_items
+            .iter()
+            .try_for_each(|block_item| block_item.convert(ctx))?;
+        ctx.del_scope();
         Ok(())
     }
 }
@@ -156,7 +163,8 @@ impl ToKoopaIR for item::Stmt {
         match self {
             item::Stmt::Assign(l_val, exp) => {
                 if ctx.is_constant(l_val) {
-                    return Err(anyhow!("Can't modify a constant."));
+                    // return Err(anyhow!("Can't modify a constant."));
+                    bail!("Can't modify a constant");
                 }
                 l_val.convert(ctx)?;
                 let lhs_l_val = ctx.pop_val().unwrap();
@@ -174,11 +182,21 @@ impl ToKoopaIR for item::Stmt {
                 ctx.push_inst(store);
             }
             item::Stmt::Return(ret_exp) => {
-                ret_exp.convert(ctx)?;
-                let v_ret = ctx.pop_val();
-                let func_data = ctx.curr_func_data_mut();
-                let ret = func_data.dfg_mut().new_value().ret(v_ret);
+                let v_ret = match ret_exp {
+                    Some(ret_exp) => {
+                        ret_exp.convert(ctx)?;
+                        ctx.pop_val()
+                    }
+                    None => None,
+                };
+                let ret = ctx.curr_func_data_mut().dfg_mut().new_value().ret(v_ret);
                 ctx.push_inst(ret);
+            }
+            item::Stmt::Block(block) => block.convert(ctx)?,
+            item::Stmt::Single(exp) => {
+                if let Some(exp) = exp {
+                    exp.convert(ctx)?
+                };
             }
         }
         Ok(())
@@ -454,8 +472,8 @@ impl ToKoopaIR for item::LVal {
             .get_symbol(&self.ident)
             .ok_or(anyhow!("Variable {} not exists.", &*self.ident))?;
         let val = match symbol {
-            crate::ast_infra::Symbol::Constant(const_val) => const_val,
-            crate::ast_infra::Symbol::Variable(p_val) => p_val,
+            crate::ast_utils::Symbol::Constant(const_val) => const_val,
+            crate::ast_utils::Symbol::Variable(p_val) => p_val,
         };
         // let val = ctx.new_value().integer(val);
         ctx.push_val(val);

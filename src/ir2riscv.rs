@@ -1,6 +1,6 @@
 use koopa::ir::{FunctionData, Program, Value, ValueKind, values};
 
-use crate::riscv_infra::{AsmGenContext, GenerateAsm};
+use crate::riscv_utils::{AsmGenContext, GenerateAsm};
 
 fn inst_size(func: &FunctionData, val: Value) -> usize {
     let data = func.dfg().value(val);

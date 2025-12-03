@@ -115,7 +115,9 @@ pub mod item {
     #[derive(Debug)]
     pub enum Stmt {
         Assign(LVal, Exp),
-        Return(Exp),
+        Block(Block),
+        Single(Option<Exp>),
+        Return(Option<Exp>),
     }
 
     /// Exp ::= LOrExp;
@@ -247,12 +249,14 @@ pub enum Symbol {
     Variable(Value),
 }
 
+pub type SymbolTable = HashMap<Ident, Symbol>;
+
 pub struct AstGenContext {
     pub program: Program,
     func_stack: Vec<Function>,
     val_stack: Vec<Value>,
     curr_bb: Option<BasicBlock>,
-    symbol_table: HashMap<Ident, Symbol>,
+    symbol_table: Vec<SymbolTable>,
     def_type: Option<Type>,
 }
 
@@ -263,18 +267,45 @@ impl AstGenContext {
             func_stack: Vec::new(),
             val_stack: Vec::new(),
             curr_bb: None,
-            symbol_table: HashMap::new(),
+            symbol_table: Vec::new(),
             def_type: None,
         }
     }
 
-    /// Insert a identifier-value pair to a table.
-    ///
-    /// Err(()): when redefine a variable.
+    pub fn add_entry_bb(&mut self) -> BasicBlock {
+        let func_data = self.curr_func_data_mut();
+        let entry_bb = func_data
+            .dfg_mut()
+            .new_bb()
+            .basic_block(Some("%entry".into()));
+        func_data
+            .layout_mut()
+            .bbs_mut()
+            .push_key_back(entry_bb)
+            .unwrap();
+        entry_bb
+    }
+
+    pub fn add_scope(&mut self) {
+        self.symbol_table.push(HashMap::new());
+    }
+
+    pub fn del_scope(&mut self) {
+        self.symbol_table.pop();
+    }
+
+    pub fn curr_scope(&self) -> &SymbolTable {
+        self.symbol_table.last().unwrap()
+    }
+
+    pub fn curr_scope_mut(&mut self) -> &mut SymbolTable {
+        self.symbol_table.last_mut().unwrap()
+    }
+
     #[inline]
     pub fn insert_const(&mut self, ident: Ident, val: Value) -> Result<()> {
-        match self.symbol_table.entry(ident) {
-            Occupied(_) => Err(anyhow!("Redefine the variable")),
+        match self.curr_scope_mut().entry(ident.clone()) {
+            Occupied(_) => Err(anyhow!("Redefine the constant {}", &*ident)),
             Vacant(e) => {
                 e.insert(Symbol::Constant(val));
                 Ok(())
@@ -284,8 +315,8 @@ impl AstGenContext {
 
     #[inline]
     pub fn insert_var(&mut self, ident: Ident, val: Value) -> Result<()> {
-        match self.symbol_table.entry(ident) {
-            Occupied(_) => Err(anyhow!("Redefine the variable")),
+        match self.curr_scope_mut().entry(ident.clone()) {
+            Occupied(_) => Err(anyhow!("Redefine the variable {}", &*ident)),
             Vacant(e) => {
                 e.insert(Symbol::Variable(val));
                 Ok(())
@@ -295,10 +326,11 @@ impl AstGenContext {
 
     #[inline]
     pub fn get_symbol(&self, ident: &Ident) -> Option<Symbol> {
-        // self.symbol_table
-        //     .iter()
-        //     .for_each(|(a, b)| println!("{}: {:?}", a, b));
-        self.symbol_table.get(ident).copied()
+        // self.curr_scope().get(ident).copied()
+        self.symbol_table
+            .iter()
+            .rev()
+            .find_map(|symbol_table| symbol_table.get(ident).copied())
     }
 
     // pub fn get_const(&self, ident: &Ident) -> Option<Value> {
@@ -425,7 +457,7 @@ impl AstGenContext {
     #[inline]
     pub fn is_constant(&self, l_val: &LVal) -> bool {
         matches!(
-            self.symbol_table.get(&l_val.ident),
+            self.curr_scope().get(&l_val.ident),
             Some(Symbol::Constant(_))
         )
     }

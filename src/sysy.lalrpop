@@ -1,4 +1,4 @@
-use crate::ast_infra::item::*;
+use crate::ast_utils::item::*;
 use koopa::ir::BinaryOp;
 use koopa::ir::Type;
 
@@ -65,7 +65,9 @@ BlockItem: BlockItem = {
 
 Stmt: Stmt = {
     <l_val: LVal> "=" <exp: Exp> ";" => Stmt::Assign(l_val, exp),
-    "return" <exp: Exp> ";" => Stmt::Return(exp),
+    <block: Block> => Stmt::Block(block),
+    <exp: Exp?> ";" => Stmt::Single(exp),
+    "return" <exp: Exp?> ";" => Stmt::Return(exp),
 };
 
 LVal: LVal = <ident: Ident> => LVal {ident};
