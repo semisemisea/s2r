@@ -138,6 +138,9 @@ impl ToKoopaIR for item::VarDef {
         let ty = ctx.curr_def_type().unwrap();
         // Allocate a target type of variable.
         let alloc_var = ctx.new_value().alloc(ty);
+        ctx.curr_func_data_mut()
+            .dfg_mut()
+            .set_value_name(alloc_var, Some(format!("@{}", self.ident.clone())));
         ctx.push_inst(alloc_var);
         if let Some(ref init_val) = self.init_val {
             init_val.convert(ctx)?;
@@ -159,46 +162,88 @@ impl ToKoopaIR for item::InitVal {
 }
 
 impl ToKoopaIR for item::Stmt {
+    #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
-            item::Stmt::Assign(l_val, exp) => {
-                if ctx.is_constant(l_val) {
-                    // return Err(anyhow!("Can't modify a constant."));
-                    bail!("Can't modify a constant");
-                }
-                l_val.convert(ctx)?;
-                let lhs_l_val = ctx.pop_val().unwrap();
-                exp.convert(ctx)?;
-                let rhs_exp = ctx.pop_val().unwrap();
-
-                // Compile time type-check.
-                let lhs_ptr_type = ctx.new_value().value_type(lhs_l_val);
-                let rhs_exp_type = ctx.new_value().value_type(rhs_exp);
-                ensure!(
-                    Type::get_pointer(rhs_exp_type.clone()) == lhs_ptr_type.clone(),
-                    "Type not match. {rhs_exp_type} can't store in {lhs_ptr_type}"
-                );
-                let store = ctx.new_value().store(rhs_exp, lhs_l_val);
-                ctx.push_inst(store);
-            }
-            item::Stmt::Return(ret_exp) => {
-                let v_ret = match ret_exp {
-                    Some(ret_exp) => {
-                        ret_exp.convert(ctx)?;
-                        ctx.pop_val()
-                    }
-                    None => None,
-                };
-                let ret = ctx.curr_func_data_mut().dfg_mut().new_value().ret(v_ret);
-                ctx.push_inst(ret);
-            }
-            item::Stmt::Block(block) => block.convert(ctx)?,
-            item::Stmt::Single(exp) => {
-                if let Some(exp) = exp {
-                    exp.convert(ctx)?
-                };
-            }
+            item::Stmt::Assign(assign_stmt) => assign_stmt.convert(ctx),
+            item::Stmt::Return(return_stmt) => return_stmt.convert(ctx),
+            item::Stmt::Block(block) => block.convert(ctx),
+            item::Stmt::Single(exp) => exp.as_ref().map_or(Ok(()), |e| e.convert(ctx)),
+            item::Stmt::IfStmt(if_stmt) => if_stmt.convert(ctx),
         }
+    }
+}
+
+impl ToKoopaIR for item::ReturnStmt {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        let v_ret = match &self.exp {
+            Some(ret_exp) => {
+                ret_exp.convert(ctx)?;
+                ctx.pop_val()
+            }
+            None => None,
+        };
+        let ret = ctx.curr_func_data_mut().dfg_mut().new_value().ret(v_ret);
+        ctx.push_inst(ret);
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::IfStmt {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        // Get condition exp value.
+        self.cond.convert(ctx)?;
+        let cond_val = ctx.pop_val().unwrap();
+        let then_bb = ctx.new_bb().basic_block(Some("%then".into()));
+        ctx.register_bb(then_bb);
+        let else_bb = self.else_branch.as_ref().map(|_| {
+            let bb = ctx.new_bb().basic_block(Some("%else".into()));
+            ctx.register_bb(bb);
+            bb
+        });
+        let end_bb = ctx.new_bb().basic_block(Some("%end".into()));
+        ctx.register_bb(end_bb);
+        let br = ctx
+            .new_value()
+            .branch(cond_val, then_bb, else_bb.unwrap_or(end_bb));
+        ctx.push_inst(br);
+
+        ctx.set_curr_bb(then_bb);
+        self.then_branch.convert(ctx)?;
+        let then_jump = ctx.new_value().jump(end_bb);
+        ctx.push_inst(then_jump);
+
+        if let Some(else_bb) = else_bb {
+            ctx.set_curr_bb(else_bb);
+            self.else_branch.as_ref().unwrap().convert(ctx)?;
+            let else_jump = ctx.new_value().jump(end_bb);
+            ctx.push_inst(else_jump);
+        }
+
+        ctx.set_curr_bb(end_bb);
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::AssignStmt {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_constant(&self.l_val) {
+            bail!("Can't modify a constant");
+        }
+        self.l_val.convert(ctx)?;
+        let lhs_l_val = ctx.pop_val().unwrap();
+        self.exp.convert(ctx)?;
+        let rhs_exp = ctx.pop_val().unwrap();
+
+        // Compile time type-check.
+        let lhs_ptr_type = ctx.new_value().value_type(lhs_l_val);
+        let rhs_exp_type = ctx.new_value().value_type(rhs_exp);
+        ensure!(
+            Type::get_pointer(rhs_exp_type.clone()) == lhs_ptr_type.clone(),
+            "Type not match. {rhs_exp_type} can't store in {lhs_ptr_type}"
+        );
+        let store = ctx.new_value().store(rhs_exp, lhs_l_val);
+        ctx.push_inst(store);
         Ok(())
     }
 }

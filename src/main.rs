@@ -33,7 +33,7 @@ fn main() -> std::io::Result<()> {
             let mut g = koopa::back::KoopaGenerator::new(Vec::new());
             g.generate_on(&ir_ctx.end()).unwrap();
             let text_from_ir = std::str::from_utf8(&g.writer()).unwrap().to_string();
-            println!("{text_from_ir}");
+            eprintln!("{text_from_ir}");
             std::fs::write(output, text_from_ir)?;
         }
         "-riscv" => {

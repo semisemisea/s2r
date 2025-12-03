@@ -64,11 +64,32 @@ BlockItem: BlockItem = {
 };
 
 Stmt: Stmt = {
-    <l_val: LVal> "=" <exp: Exp> ";" => Stmt::Assign(l_val, exp),
+    MatchedStmt,
+    OpenStmt,
+}
+
+AssignStmt: AssignStmt = <l_val: LVal> "=" <exp: Exp> ";" => AssignStmt {l_val, exp};
+
+ReturnStmt: ReturnStmt = "return" <exp: Exp?> ";" => ReturnStmt {exp};
+
+MatchedStmt: Stmt = {
+    <assign: AssignStmt> => Stmt::Assign(assign),
+
     <block: Block> => Stmt::Block(block),
+
     <exp: Exp?> ";" => Stmt::Single(exp),
-    "return" <exp: Exp?> ";" => Stmt::Return(exp),
+
+    "if" "(" <cond: Exp> ")" <then_branch: MatchedStmt> "else" <else_branch: MatchedStmt> => 
+        Stmt::IfStmt(IfStmt {cond, then_branch: Box::new(then_branch), else_branch: Some(Box::new(else_branch))}),
+    
+    <return_stmt: ReturnStmt> => Stmt::Return(return_stmt),
 };
+
+OpenStmt: Stmt = {
+    "if" "(" <cond: Exp> ")" <then_branch: Stmt> => Stmt::IfStmt(IfStmt{cond, then_branch: Box::new(then_branch), else_branch: None}),
+    "if" "(" <cond: Exp> ")" <then_branch: MatchedStmt> "else" <else_branch: OpenStmt> => 
+        Stmt::IfStmt (IfStmt{cond, then_branch: Box::new(then_branch), else_branch: Some(Box::new(else_branch))}),
+}
 
 LVal: LVal = <ident: Ident> => LVal {ident};
 

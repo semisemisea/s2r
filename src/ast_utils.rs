@@ -114,10 +114,34 @@ pub mod item {
     /// A statement, either an assignment or a return statement.
     #[derive(Debug)]
     pub enum Stmt {
-        Assign(LVal, Exp),
+        Assign(AssignStmt),
         Block(Block),
         Single(Option<Exp>),
-        Return(Option<Exp>),
+        Return(ReturnStmt),
+        IfStmt(IfStmt),
+        // IfStmt {
+        //     cond: Exp,
+        //     then_branch: Box<Stmt>,
+        //     else_branch: Option<Box<Stmt>>,
+        // },
+    }
+
+    #[derive(Debug)]
+    pub struct ReturnStmt {
+        pub exp: Option<Exp>,
+    }
+
+    #[derive(Debug)]
+    pub struct AssignStmt {
+        pub l_val: LVal,
+        pub exp: Exp,
+    }
+
+    #[derive(Debug)]
+    pub struct IfStmt {
+        pub cond: Exp,
+        pub then_branch: Box<Stmt>,
+        pub else_branch: Option<Box<Stmt>>,
     }
 
     /// Exp ::= LOrExp;
@@ -366,14 +390,37 @@ impl AstGenContext {
     }
 
     #[inline]
+    /// A completed basic block means it has end with one of the instruction below.
+    /// `br`, `jump`, `ret`
+    pub fn is_complete_bb(&mut self) -> bool {
+        let curr_bb = self.curr_bb.unwrap();
+        self.curr_func_data()
+            .layout()
+            .bbs()
+            .node(&curr_bb)
+            .unwrap()
+            .insts()
+            .back_key()
+            .is_some_and(|&inst| {
+                matches!(
+                    self.curr_func_data().dfg().value(inst).kind(),
+                    ValueKind::Branch(_) | ValueKind::Jump(_) | ValueKind::Return(_)
+                )
+            })
+    }
+
+    #[inline]
+    /// No effect when a basic block is completed (a.k.a have `br`, `jump` or `ret` at the end)
     pub fn push_inst(&mut self, val: Value) {
-        let curr_basic_block = self.curr_bb.unwrap();
-        self.curr_func_data_mut()
-            .layout_mut()
-            .bb_mut(curr_basic_block)
-            .insts_mut()
-            .push_key_back(val)
-            .unwrap();
+        let curr_bb = self.curr_bb.unwrap();
+        if !self.is_complete_bb() {
+            self.curr_func_data_mut()
+                .layout_mut()
+                .bb_mut(curr_bb)
+                .insts_mut()
+                .push_key_back(val)
+                .unwrap();
+        }
     }
 
     pub fn remove_inst(&mut self, val: Value) -> Option<(Value, layout::InstNode)> {
@@ -425,6 +472,7 @@ impl AstGenContext {
     }
 
     #[inline]
+    /// Return the original basic_block handle
     pub fn set_curr_bb(&mut self, bb: BasicBlock) -> Option<BasicBlock> {
         self.curr_bb.replace(bb)
     }
@@ -460,5 +508,13 @@ impl AstGenContext {
             self.curr_scope().get(&l_val.ident),
             Some(Symbol::Constant(_))
         )
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn should_p() {
+        todo!();
     }
 }
