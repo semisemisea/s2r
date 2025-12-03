@@ -7,7 +7,7 @@ A toy but my first compiler, implemented in Rust, which convert SysY programming
 - Expression - ✅
 - Constants and variables - ✅
 - Block and scope - ✅
-- if/else
+- if/else - ✅
 - while/for
 - Function and global variables
 - Arrays
@@ -19,3 +19,4 @@ Keep track of the things I'm interested in, but have no time to start or finish.
 
 - Add syntax highlight
 - Add custom LSP support
+- Add more constant folding optimization
