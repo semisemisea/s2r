@@ -539,7 +539,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sysv2riscv"
+name = "sysy2riscv"
 version = "0.1.0"
 dependencies = [
  "anyhow",
