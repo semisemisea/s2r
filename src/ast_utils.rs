@@ -119,12 +119,16 @@ pub mod item {
         Single(Option<Exp>),
         Return(ReturnStmt),
         IfStmt(IfStmt),
-        // IfStmt {
-        //     cond: Exp,
-        //     then_branch: Box<Stmt>,
-        //     else_branch: Option<Box<Stmt>>,
-        // },
+        WhileStmt(WhileStmt),
+        Break(Break),
+        Continue(Continue),
     }
+
+    #[derive(Debug)]
+    pub struct Break;
+
+    #[derive(Debug)]
+    pub struct Continue;
 
     #[derive(Debug)]
     pub struct ReturnStmt {
@@ -142,6 +146,12 @@ pub mod item {
         pub cond: Exp,
         pub then_branch: Box<Stmt>,
         pub else_branch: Option<Box<Stmt>>,
+    }
+
+    #[derive(Debug)]
+    pub struct WhileStmt {
+        pub cond: Exp,
+        pub body: Box<Stmt>,
     }
 
     /// Exp ::= LOrExp;
@@ -282,6 +292,7 @@ pub struct AstGenContext {
     curr_bb: Option<BasicBlock>,
     symbol_table: Vec<SymbolTable>,
     def_type: Option<Type>,
+    loop_stack: Vec<(BasicBlock, BasicBlock)>,
 }
 
 impl AstGenContext {
@@ -293,7 +304,20 @@ impl AstGenContext {
             curr_bb: None,
             symbol_table: Vec::new(),
             def_type: None,
+            loop_stack: Vec::new(),
         }
+    }
+
+    pub fn push_loop(&mut self, entry_bb: BasicBlock, end_bb: BasicBlock) {
+        self.loop_stack.push((entry_bb, end_bb));
+    }
+
+    pub fn pop_loop(&mut self) {
+        self.loop_stack.pop();
+    }
+
+    pub fn curr_loop(&self) -> Option<(BasicBlock, BasicBlock)> {
+        self.loop_stack.last().copied()
     }
 
     pub fn add_entry_bb(&mut self) -> BasicBlock {

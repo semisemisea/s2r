@@ -72,12 +72,24 @@ AssignStmt: AssignStmt = <l_val: LVal> "=" <exp: Exp> ";" => AssignStmt {l_val, 
 
 ReturnStmt: ReturnStmt = "return" <exp: Exp?> ";" => ReturnStmt {exp};
 
+WhileStmt: WhileStmt = "while" "(" <cond: Exp> ")" <body: MatchedStmt> => WhileStmt {cond, body:Box::new(body)};
+
+Break: Break = "break" ";" => Break;
+
+Continue: Continue = "continue" ";" => Continue;
+
 MatchedStmt: Stmt = {
     <assign: AssignStmt> => Stmt::Assign(assign),
 
     <block: Block> => Stmt::Block(block),
 
     <exp: Exp?> ";" => Stmt::Single(exp),
+    
+    <break_stmt: Break> => Stmt::Break(break_stmt),
+
+    <continue_stmt: Continue> => Stmt::Continue(continue_stmt),
+
+    <while_stmt: WhileStmt> => Stmt::WhileStmt(while_stmt),
 
     "if" "(" <cond: Exp> ")" <then_branch: MatchedStmt> "else" <else_branch: MatchedStmt> => 
         Stmt::IfStmt(IfStmt {cond, then_branch: Box::new(then_branch), else_branch: Some(Box::new(else_branch))}),

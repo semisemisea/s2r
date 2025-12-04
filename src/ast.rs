@@ -1,5 +1,5 @@
 use crate::ast_utils::{AstGenContext, Symbol, item};
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use koopa::ir::{builder::EntityInfoQuerier, builder_traits::*, *};
 
 /// Define how a AST node should convert to Koopa IR.
@@ -170,7 +170,60 @@ impl ToKoopaIR for item::Stmt {
             item::Stmt::Block(block) => block.convert(ctx),
             item::Stmt::Single(exp) => exp.as_ref().map_or(Ok(()), |e| e.convert(ctx)),
             item::Stmt::IfStmt(if_stmt) => if_stmt.convert(ctx),
+            item::Stmt::WhileStmt(while_stmt) => while_stmt.convert(ctx),
+            item::Stmt::Break(break_stmt) => break_stmt.convert(ctx),
+            item::Stmt::Continue(continue_stmt) => continue_stmt.convert(ctx),
         }
+    }
+}
+
+impl ToKoopaIR for item::Break {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        let loop_end = ctx.curr_loop().context("Use break outside of loop")?.1;
+        let jump_to_loop_end = ctx.new_value().jump(loop_end);
+        ctx.push_inst(jump_to_loop_end);
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::Continue {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        let loop_start = ctx.curr_loop().context("Use continue outside of loop")?.0;
+        let jump_to_loop_start = ctx.new_value().jump(loop_start);
+        ctx.push_inst(jump_to_loop_start);
+        Ok(())
+    }
+}
+
+impl ToKoopaIR for item::WhileStmt {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        // create 3 basic blocks for while loop
+        let entry = ctx.new_bb().basic_block(Some("%while_entry".into()));
+        ctx.register_bb(entry);
+        let body = ctx.new_bb().basic_block(Some("%while_body".into()));
+        ctx.register_bb(body);
+        let end = ctx.new_bb().basic_block(Some("%while_end".into()));
+        ctx.register_bb(end);
+        ctx.push_loop(entry, end);
+
+        // jump into while entry block unconditionally
+        let jump_to_while_entry = ctx.new_value().jump(entry);
+        ctx.push_inst(jump_to_while_entry);
+
+        ctx.set_curr_bb(entry);
+        self.cond.convert(ctx)?;
+        let cond_val = ctx.pop_val().unwrap();
+        let branch = ctx.new_value().branch(cond_val, body, end);
+        ctx.push_inst(branch);
+
+        ctx.set_curr_bb(body);
+        self.body.convert(ctx)?;
+        let jump = ctx.new_value().jump(entry);
+        ctx.push_inst(jump);
+
+        ctx.pop_loop();
+        ctx.set_curr_bb(end);
+        Ok(())
     }
 }
 
