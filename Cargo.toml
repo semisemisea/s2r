@@ -16,4 +16,7 @@ lalrpop-util = { version = "0.22.2", features = ["lexer"] }
 num_enum = "0.7.5"
 thiserror = "2.0.17"
 
+[profile.bench]
+incremental = true
+
 [features]

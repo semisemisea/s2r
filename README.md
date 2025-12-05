@@ -8,8 +8,8 @@ A toy but my first compiler, implemented in Rust, which convert SysY programming
 - Constants and variables - ✅
 - Block and scope - ✅
 - if/else - ✅
-- while/for
-- Function and global variables
+- while/for - ✅
+- Function and global variables - (IR finished.)
 - Arrays
 - Optimization
 
@@ -19,4 +19,4 @@ Keep track of the things I'm interested in, but have no time to start or finish.
 
 - Add syntax highlight
 - Add custom LSP support
-- Add more constant folding optimization
+- More constant folding (Untouched variable, modified variable, function, etc..)
