@@ -7,8 +7,14 @@ pub mod item {
     ///
     /// The root of the AST, representing a complete compilation unit.
     #[derive(Debug)]
-    pub struct CompUnit {
-        pub func_def: FuncDef,
+    pub struct CompUnits {
+        pub comp_units: Vec<CompUnit>,
+    }
+
+    #[derive(Debug)]
+    pub enum CompUnit {
+        FuncDef(FuncDef),
+        Decl(Decl),
     }
 
     /// FuncDef ::= FuncType IDENT "(" ")" Block;
@@ -18,7 +24,14 @@ pub mod item {
     pub struct FuncDef {
         pub func_type: FuncType,
         pub ident: Ident,
+        pub params: Vec<FuncFParam>,
         pub block: Block,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct FuncFParam {
+        pub b_type: Type,
+        pub ident: Ident,
     }
 
     /// FuncType ::= "int";
@@ -185,6 +198,13 @@ pub mod item {
     pub enum UnaryExp {
         PrimaryExp(Box<PrimaryExp>),
         Unary(UnaryOp, Box<UnaryExp>),
+        FuncCall(FuncCall),
+    }
+
+    #[derive(Debug)]
+    pub struct FuncCall {
+        pub ident: Ident,
+        pub args: Vec<Exp>,
     }
 
     /// UnaryOp ::= "+" | "-" | "!";
@@ -267,7 +287,18 @@ pub mod item {
     pub type Number = i32;
 }
 
-use anyhow::{Result, anyhow};
+/// Define how a AST node should convert to Koopa IR.
+///
+/// Required method: `fn convert(&self, ctx: &mut AstGenContext) -> Result<()>;`
+///
+/// @param `ctx`: Context that store everything needed to convert.
+pub trait ToKoopaIR {
+    fn convert(&self, ctx: &mut AstGenContext) -> Result<()>;
+
+    fn global_convert(&self, ctx: &mut AstGenContext) -> Result<()>;
+}
+
+use anyhow::{Result, bail, ensure};
 use item::*;
 use koopa::ir::{builder::*, *};
 use std::collections::{
@@ -281,6 +312,7 @@ pub type Ident = std::rc::Rc<str>;
 pub enum Symbol {
     Constant(Value),
     Variable(Value),
+    Callable(Function),
 }
 
 pub type SymbolTable = HashMap<Ident, Symbol>;
@@ -302,10 +334,42 @@ impl AstGenContext {
             func_stack: Vec::new(),
             val_stack: Vec::new(),
             curr_bb: None,
-            symbol_table: Vec::new(),
+            symbol_table: vec![SymbolTable::new()],
             def_type: None,
             loop_stack: Vec::new(),
         }
+    }
+
+    pub fn get_global_val(&self, val: Value) -> Option<Number> {
+        if let ValueKind::Integer(int) = self.program.borrow_value(val).kind() {
+            return Some(int.value());
+        }
+        None
+    }
+
+    pub fn _get_val(&self, ident: &Ident) -> Option<Number> {
+        let sym = self.global_scope().get(ident);
+        sym.map(|&x| match x {
+            Symbol::Constant(int) => {
+                let borrow_value = self.program.borrow_value(int);
+                let ValueKind::Integer(int) = borrow_value.kind() else {
+                    unreachable!();
+                };
+                int.value()
+            }
+            Symbol::Variable(var) => {
+                let borrow_value = self.program.borrow_value(var);
+                let ValueKind::GlobalAlloc(glob_alloc) = borrow_value.kind() else {
+                    unreachable!();
+                };
+                match self.program.borrow_value(glob_alloc.init()).kind() {
+                    ValueKind::Integer(int) => int.value(),
+                    ValueKind::ZeroInit(_) => 0,
+                    _ => unreachable!(),
+                }
+            }
+            Symbol::Callable(_) => unreachable!(),
+        })
     }
 
     pub fn push_loop(&mut self, entry_bb: BasicBlock, end_bb: BasicBlock) {
@@ -350,23 +414,49 @@ impl AstGenContext {
         self.symbol_table.last_mut().unwrap()
     }
 
+    pub fn global_scope(&self) -> &SymbolTable {
+        self.symbol_table.first().unwrap()
+    }
+
+    // pub fn is_global(&self) -> bool {
+    //     self.func_stack.is_empty()
+    // }
+
+    pub fn new_global_value(&mut self) -> GlobalBuilder<'_> {
+        self.program.new_value()
+    }
+
     #[inline]
     pub fn insert_const(&mut self, ident: Ident, val: Value) -> Result<()> {
-        match self.curr_scope_mut().entry(ident.clone()) {
-            Occupied(_) => Err(anyhow!("Redefine the constant {}", &*ident)),
-            Vacant(e) => {
-                e.insert(Symbol::Constant(val));
-                Ok(())
-            }
-        }
+        ensure!(
+            // self.global_scope().get(&ident).is_none()
+            self.curr_scope().get(&ident).is_none(),
+            "Redefine the constant {}",
+            &*ident
+        );
+        self.curr_scope_mut().insert(ident, Symbol::Constant(val));
+        Ok(())
     }
 
     #[inline]
     pub fn insert_var(&mut self, ident: Ident, val: Value) -> Result<()> {
+        ensure!(
+            // self.global_scope().get(&ident).is_none()
+            self.curr_scope().get(&ident).is_none(),
+            "Redefine the variable {}",
+            &*ident
+        );
+        self.curr_scope_mut().insert(ident, Symbol::Variable(val));
+        Ok(())
+    }
+
+    #[inline]
+    pub fn insert_func(&mut self, ident: Ident, func: Function) -> Result<()> {
+        debug_assert!(self.symbol_table.len() == 1);
         match self.curr_scope_mut().entry(ident.clone()) {
-            Occupied(_) => Err(anyhow!("Redefine the variable {}", &*ident)),
+            Occupied(_) => bail!("Redefine the function {}", &*ident),
             Vacant(e) => {
-                e.insert(Symbol::Variable(val));
+                e.insert(Symbol::Callable(func));
                 Ok(())
             }
         }
@@ -381,12 +471,11 @@ impl AstGenContext {
             .find_map(|symbol_table| symbol_table.get(ident).copied())
     }
 
-    // pub fn get_const(&self, ident: &Ident) -> Option<Value> {
-    //     match self.symbol_table.get(ident) {
-    //         Some(Symbol::Constant(ret)) => Some(*ret),
-    //         _ => None,
-    //     }
-    // }
+    #[inline]
+    /// cheap version of get_symbol when you want global
+    pub fn get_global(&self, ident: &Ident) -> Option<Symbol> {
+        self.symbol_table.first().unwrap().get(ident).copied()
+    }
 
     #[inline]
     pub fn push_func(&mut self, func: Function) {
@@ -416,7 +505,7 @@ impl AstGenContext {
     #[inline]
     /// A completed basic block means it has end with one of the instruction below.
     /// `br`, `jump`, `ret`
-    pub fn is_complete_bb(&mut self) -> bool {
+    pub fn is_complete_bb(&self) -> bool {
         let curr_bb = self.curr_bb.unwrap();
         self.curr_func_data()
             .layout()
@@ -491,7 +580,7 @@ impl AstGenContext {
 
     #[must_use]
     #[inline]
-    pub fn new_value(&mut self) -> LocalBuilder<'_> {
+    pub fn new_local_value(&mut self) -> LocalBuilder<'_> {
         self.curr_func_data_mut().dfg_mut().new_value()
     }
 
@@ -499,11 +588,6 @@ impl AstGenContext {
     /// Return the original basic_block handle
     pub fn set_curr_bb(&mut self, bb: BasicBlock) -> Option<BasicBlock> {
         self.curr_bb.replace(bb)
-    }
-
-    #[inline]
-    pub fn reset_bb(&mut self, bb: Option<BasicBlock>) {
-        self.curr_bb = bb
     }
 
     #[inline]
@@ -515,11 +599,6 @@ impl AstGenContext {
     pub fn set_def_type(&mut self, ty: Type) -> Option<Type> {
         self.def_type.replace(ty)
     }
-
-    // #[inline]
-    // pub fn reset_def_type(&mut self, ty: Option<Type>) {
-    //     self.def_type = ty
-    // }
 
     #[inline]
     pub fn curr_def_type(&self) -> Option<Type> {
@@ -533,12 +612,65 @@ impl AstGenContext {
             Some(Symbol::Constant(_))
         )
     }
-}
 
-#[cfg(test)]
-mod test {
-    #[test]
-    fn should_p() {
-        todo!();
+    pub fn decl_library_functions(&mut self) -> Result<()> {
+        let getint = self.program.new_func(FunctionData::new_decl(
+            "@getint".into(),
+            vec![],
+            Type::get_i32(),
+        ));
+        self.insert_func(std::rc::Rc::from("getint"), getint)?;
+        let getch = self.program.new_func(FunctionData::new_decl(
+            "@getch".into(),
+            vec![],
+            Type::get_i32(),
+        ));
+        self.insert_func(std::rc::Rc::from("getch"), getch)?;
+        let getarray = self.program.new_func(FunctionData::new_decl(
+            "@getarray".into(),
+            vec![Type::get_pointer(Type::get_i32())],
+            Type::get_i32(),
+        ));
+        self.insert_func(std::rc::Rc::from("getarray"), getarray)?;
+        let putint = self.program.new_func(FunctionData::new_decl(
+            "@putint".into(),
+            vec![Type::get_i32()],
+            Type::get_unit(),
+        ));
+        self.insert_func(std::rc::Rc::from("putint"), putint)?;
+        let putch = self.program.new_func(FunctionData::new_decl(
+            "@putch".into(),
+            vec![Type::get_i32()],
+            Type::get_unit(),
+        ));
+        self.insert_func(std::rc::Rc::from("putch"), putch)?;
+        let putarray = self.program.new_func(FunctionData::new_decl(
+            "@putarray".into(),
+            vec![Type::get_i32(), Type::get_pointer(Type::get_i32())],
+            Type::get_unit(),
+        ));
+        self.insert_func(std::rc::Rc::from("putarray"), putarray)?;
+        let starttime = self.program.new_func(FunctionData::new_decl(
+            "@starttime".into(),
+            vec![],
+            Type::get_unit(),
+        ));
+        self.insert_func(std::rc::Rc::from("starttime"), starttime)?;
+        let stoptime = self.program.new_func(FunctionData::new_decl(
+            "@stoptime".into(),
+            vec![],
+            Type::get_unit(),
+        ));
+        self.insert_func(std::rc::Rc::from("stoptime"), stoptime)?;
+
+        Ok(())
+    }
+
+    pub fn get_val_kind(&self, val: Value) -> ValueKind {
+        if val.is_global() {
+            self.program.borrow_value(val).clone().kind().clone()
+        } else {
+            self.curr_func_data().dfg().value(val).kind().clone()
+        }
     }
 }

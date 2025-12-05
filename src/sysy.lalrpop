@@ -12,13 +12,76 @@ match {
 }
 
 Comma<T>: Vec<T> = {
-    <mut v:(<T> ",")*> <e: T> => {
-        v.push(e);
-        v
+    <mut v:(<T> ",")*> <e: T?> => match e {
+        None => v,
+        Some(e) => {
+            v.push(e);
+            v
+        }
     }
 }
 
-pub CompUnit: CompUnit = <func_def: FuncDef> => CompUnit {<>};
+// ======================================================
+pub CompUnits: CompUnits = <comp_units: CompUnit*> => CompUnits {<>};
+
+CompUnit: CompUnit = {
+    // 1. Const Declaration (无歧义)
+    <c_decl: ConstDecl> => CompUnit::Decl(Decl::ConstDecl(c_decl)),
+
+    // 2. Void Function (无歧义)
+    "void" <ident: Ident> "(" <params: Comma<FuncFParam>> ")" <block: Block> => {
+        CompUnit::FuncDef(FuncDef {
+            func_type: Type::get_unit(),
+            ident,
+            params,
+            block,
+        })
+    },
+
+    // 3. Int Start (有歧义: int Ident ...)
+    // 策略：解析 "int" 和 Ident，然后调用 IntSuffix 规则。
+    // IntSuffix 返回一个闭包，我们把 ident 传给它来构造结果。
+    "int" <ident: Ident> <builder: IntSuffix> => builder(ident),
+}
+
+// 这是一个后缀规则，处理 int Ident 之后的部分
+// 返回类型是一个闭包，接收 Ident (Rc<str>)，返回 CompUnit
+IntSuffix: Box<dyn FnOnce(std::rc::Rc<str>) -> CompUnit> = {
+    // 分支 A: 遇到左括号 -> 函数定义
+    "(" <params: Comma<FuncFParam>> ")" <block: Block> => {
+        Box::new(move |ident| CompUnit::FuncDef(FuncDef {
+            func_type: Type::get_i32(), // 既然进入了 IntSuffix，说明开头是 int
+            ident,
+            params,
+            block,
+        }))
+    },
+
+    // 分支 B: 遇到赋值号或分号或逗号 -> 变量声明
+    // 这里的逻辑是：解析可选的初始化值，以及后续可能的更多变量定义
+    <init: ("=" <InitVal>)?> <mut rest: ("," <VarDef>)*> ";" => {
+        Box::new(move |ident| {
+            // 将第一个变量（前缀解析的 ident + 这里解析的 init）构建出来
+            let first_def = VarDef { ident, init_val: init };
+            // 插到列表最前面
+            rest.insert(0, first_def);
+            
+            CompUnit::Decl(Decl::VarDecl(VarDecl {
+                btype: Type::get_i32(),
+                var_defs: rest,
+            }))
+        })
+    }
+}
+// ======================================================
+
+// pub CompUnits: CompUnits = <comp_units: CompUnit*> => CompUnits {<>};
+
+
+// CompUnit: CompUnit = {
+//     <func_def: FuncDef> => CompUnit::FuncDef (func_def),
+//     <decl: Decl> => CompUnit::Decl (decl),
+// }
 
 Decl: Decl = {
     <c_decl: ConstDecl> => Decl::ConstDecl(c_decl),
@@ -48,13 +111,18 @@ VarDef: VarDef = <ident: Ident> <init_val: ("=" <InitVal>)?> => VarDef {ident, i
 
 InitVal: InitVal = <exp: Exp> => InitVal {exp};
 
+FuncFParam: FuncFParam = <b_type: BType> <ident: Ident> => FuncFParam {<>};
+
 FuncDef: FuncDef = {
-  <func_type: FuncType> <ident: Ident> "(" ")" <block: Block> => {
+  <func_type: FuncType> <ident: Ident> "(" <params: Comma<FuncFParam>> ")" <block: Block> => {
     FuncDef {<>}
   }
 };
 
-FuncType: Type = "int" => Type::get_i32();
+FuncType: Type = {
+    "int" => Type::get_i32(),
+    "void" => Type::get_unit(),
+}
 
 Block: Block = "{" <block_items: BlockItem*> "}" => Block {block_items};
 
@@ -140,7 +208,10 @@ BinaryOp: BinaryOp = {
 UnaryExp: UnaryExp = {
   <primary_exp: PrimaryExp> => UnaryExp::PrimaryExp(Box::new(primary_exp)),
   <unary_op: UnaryOp> <unary_exp: UnaryExp> => UnaryExp::Unary(unary_op, Box::new(unary_exp)),
+  <func_call: FuncCall> => UnaryExp::FuncCall(func_call),
 };
+
+FuncCall: FuncCall = <ident: Ident> "(" <args: Comma<Exp>> ")" => FuncCall {ident, args};
 
 AddExpOnlyOp: BinaryOp = {
     "+" => BinaryOp::Add,

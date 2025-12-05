@@ -4,9 +4,11 @@ mod ast;
 mod ast_utils;
 mod ir2riscv;
 mod riscv_utils;
-use ast::ToKoopaIR;
 
-use crate::{ast_utils::AstGenContext, riscv_utils::AsmGenContext};
+use crate::{
+    ast_utils::{AstGenContext, ToKoopaIR},
+    riscv_utils::AsmGenContext,
+};
 
 lalrpop_mod!(sysy);
 
@@ -19,10 +21,9 @@ fn main() -> std::io::Result<()> {
     let output = args.next().unwrap();
 
     let input = std::fs::read_to_string(input)?;
-    #[cfg(debug_assertions)]
     println!("{input}");
 
-    let ast = sysy::CompUnitParser::new().parse(&input).unwrap();
+    let ast = sysy::CompUnitsParser::new().parse(&input).unwrap();
     let mut ir_ctx = AstGenContext::new();
     if let Err(e) = ast.convert(&mut ir_ctx) {
         eprintln!("Encounter error: {e}");
@@ -33,6 +34,7 @@ fn main() -> std::io::Result<()> {
             let mut g = koopa::back::KoopaGenerator::new(Vec::new());
             g.generate_on(&ir_ctx.end()).unwrap();
             let ir_text = std::str::from_utf8(&g.writer()).unwrap().to_string();
+            #[cfg(debug_assertions)]
             eprintln!("{ir_text}");
             std::fs::write(output, ir_text)?;
         }
