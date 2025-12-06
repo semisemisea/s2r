@@ -85,6 +85,7 @@ pub mod item {
     #[derive(Debug)]
     pub struct ConstDef {
         pub ident: Ident,
+        pub arr_dim: Vec<ConstExp>,
         pub const_init_val: ConstInitVal,
     }
 
@@ -92,8 +93,9 @@ pub mod item {
     ///
     /// The initial value of a constant.
     #[derive(Debug)]
-    pub struct ConstInitVal {
-        pub const_exp: ConstExp,
+    pub enum ConstInitVal {
+        Normal(ConstExp),
+        Array(Vec<ConstInitVal>),
     }
 
     /// VarDecl ::= BType VarDef {"," VarDef} ";";
@@ -111,6 +113,7 @@ pub mod item {
     #[derive(Debug)]
     pub struct VarDef {
         pub ident: Ident,
+        pub arr_dim: Vec<ConstExp>,
         pub init_val: Option<InitVal>,
     }
 
@@ -118,8 +121,9 @@ pub mod item {
     ///
     /// The initial value of a variable.
     #[derive(Debug)]
-    pub struct InitVal {
-        pub exp: Exp,
+    pub enum InitVal {
+        Normal(Exp),
+        Array(Vec<InitVal>),
     }
 
     /// Stmt ::= LVal "=" Exp ";" | "return" Exp ";";
@@ -181,6 +185,7 @@ pub mod item {
     #[derive(Debug)]
     pub struct LVal {
         pub ident: Ident,
+        pub index: Vec<Exp>,
     }
 
     /// ConstExp ::= Exp;
@@ -298,7 +303,7 @@ pub trait ToKoopaIR {
     fn global_convert(&self, ctx: &mut AstGenContext) -> Result<()>;
 }
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use item::*;
 use koopa::ir::{builder::*, *};
 use std::collections::{
@@ -666,11 +671,45 @@ impl AstGenContext {
         Ok(())
     }
 
-    pub fn get_val_kind(&self, val: Value) -> ValueKind {
+    #[inline]
+    fn local_val_as_i32(&self, val: Value) -> Option<i32> {
+        debug_assert!(!val.is_global());
+        match self.curr_func_data().dfg().value(val).kind() {
+            ValueKind::Integer(int) => Some(int.value()),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn global_val_as_i32(&self, val: Value) -> Option<i32> {
+        debug_assert!(val.is_global());
+        match self.program.borrow_value(val).kind() {
+            ValueKind::Integer(int) => Some(int.value()),
+            _ => None,
+        }
+    }
+
+    pub fn as_i32(&self, val: Value) -> Option<i32> {
         if val.is_global() {
-            self.program.borrow_value(val).clone().kind().clone()
+            self.global_val_as_i32(val)
         } else {
-            self.curr_func_data().dfg().value(val).kind().clone()
+            self.local_val_as_i32(val)
+        }
+    }
+
+    pub fn pop_i32(&mut self) -> anyhow::Result<i32> {
+        let val = self.pop_val().unwrap();
+        self.as_i32(val).context(format!("Not a integer {:?}", val))
+    }
+
+    pub fn set_value_name(&mut self, val: Value, ident: Ident) {
+        if val.is_global() {
+            self.program
+                .set_value_name(val, Some(format!("%{}", ident.clone())));
+        } else {
+            self.curr_func_data_mut()
+                .dfg_mut()
+                .set_value_name(val, Some(format!("%{}", ident.clone())));
         }
     }
 }

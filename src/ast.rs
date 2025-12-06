@@ -1,6 +1,7 @@
 use crate::ast_utils::{AstGenContext, Symbol, ToKoopaIR, item};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use koopa::ir::{builder::EntityInfoQuerier, builder_traits::*, *};
+use std::iter::repeat;
 
 impl ToKoopaIR for item::CompUnits {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
@@ -58,9 +59,7 @@ impl ToKoopaIR for item::FuncDef {
             .map(|(p, &v)| (p.b_type, p.ident, v));
         for (ty, ident, param_val) in ty_name_and_val {
             let alloc = ctx.new_local_value().alloc(ty);
-            ctx.curr_func_data_mut()
-                .dfg_mut()
-                .set_value_name(alloc, Some(format!("%{}", &*ident)));
+            ctx.set_value_name(alloc, ident.clone());
             let store = ctx.new_local_value().store(param_val, alloc);
             ctx.insert_var(ident, alloc)?;
             ctx.push_inst(alloc);
@@ -142,6 +141,7 @@ impl ToKoopaIR for item::Decl {
         }
     }
 
+    #[inline]
     fn global_convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         match self {
             item::Decl::ConstDecl(c_decl) => c_decl.global_convert(ctx),
@@ -151,6 +151,7 @@ impl ToKoopaIR for item::Decl {
 }
 
 impl ToKoopaIR for item::ConstDecl {
+    #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         ensure!(
             self.btype.is_i32(),
@@ -161,6 +162,7 @@ impl ToKoopaIR for item::ConstDecl {
             .try_for_each(|const_def| const_def.convert(ctx))
     }
 
+    #[inline]
     fn global_convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         ensure!(
             self.btype.is_i32(),
@@ -174,34 +176,114 @@ impl ToKoopaIR for item::ConstDecl {
 
 impl ToKoopaIR for item::ConstDef {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        // Get the init val
-        self.const_init_val.convert(ctx)?;
-        let init_val = ctx.pop_val().unwrap();
-        // Not a constant val
-        if !ctx.curr_func_data().dfg().value(init_val).kind().is_const() {
-            bail!("Value can't be calculated at compile time.");
-        };
-        ctx.insert_const(self.ident.clone(), init_val)
+        // not an array
+        if self.arr_dim.is_empty() {
+            // Get the init val
+            let item::ConstInitVal::Normal(_) = self.const_init_val else {
+                bail!("Invalid assign: array to a integer")
+            };
+            self.const_init_val.convert(ctx)?;
+            let init_val = ctx.pop_val().unwrap();
+            // Not a constant val
+            if !ctx.curr_func_data().dfg().value(init_val).kind().is_const() {
+                bail!("Value can't be calculated at compile time.");
+            };
+            ctx.insert_const(self.ident.clone(), init_val)
+        }
+        // is an array
+        else {
+            self.arr_dim
+                .iter()
+                .try_for_each(|const_exp| const_exp.convert(ctx))?;
+            let array_shape = (0..self.arr_dim.len())
+                .map(|_| ctx.pop_i32())
+                .collect::<Result<Vec<_>>>()?;
+            let len = array_shape[0] as usize;
+            let alloc_var = ctx
+                .new_local_value()
+                .alloc(Type::get_array(Type::get_i32(), len));
+            ctx.push_inst(alloc_var);
+            let item::ConstInitVal::Array(ref exps) = self.const_init_val else {
+                bail!("Invalid assign: integer to an array")
+            };
+            exps.iter()
+                .rev()
+                .try_for_each(|const_exp| const_exp.convert(ctx))?;
+            let zero = ctx.new_local_value().integer(0);
+            let const_init_vals = (0..exps.len())
+                .map(|_| ctx.pop_val().unwrap())
+                .chain(repeat(zero))
+                .take(len)
+                // TODO: We can change it to for loop to avoid `.collect()`
+                .collect::<Vec<_>>();
+            for (idx, c_init_val) in const_init_vals.into_iter().enumerate() {
+                let index = ctx.new_local_value().integer(idx as i32);
+                let get_elem_ptr = ctx.new_local_value().get_elem_ptr(alloc_var, index);
+                let store = ctx.new_local_value().store(c_init_val, get_elem_ptr);
+                ctx.push_inst(get_elem_ptr);
+                ctx.push_inst(store);
+            }
+            ctx.set_value_name(alloc_var, self.ident.clone());
+            ctx.insert_const(self.ident.clone(), alloc_var)
+        }
     }
 
     fn global_convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        self.const_init_val.global_convert(ctx)?;
-        let init_val = ctx.pop_val().unwrap();
-        // eprintln!("{:?}", ctx.program.borrow_value(init_val).kind());
-        // No more check
-        ctx.insert_const(self.ident.clone(), init_val)
+        // is array
+        if self.arr_dim.is_empty() {
+            self.const_init_val.global_convert(ctx)?;
+            let init_val = ctx.pop_val().unwrap();
+            // No more check
+            ctx.insert_const(self.ident.clone(), init_val)
+        }
+        // not an array
+        else {
+            self.arr_dim
+                .iter()
+                .try_for_each(|const_exp| const_exp.global_convert(ctx))?;
+            let array_shape = (0..self.arr_dim.len())
+                .map(|_| ctx.pop_i32())
+                .collect::<Result<Vec<_>>>()?;
+            let len = array_shape[0] as usize;
+            let item::ConstInitVal::Array(ref exps) = self.const_init_val else {
+                bail!("Invalid assign: integer to an array")
+            };
+            exps.iter()
+                .rev()
+                .try_for_each(|exp| exp.global_convert(ctx))?;
+            let zero = ctx.new_global_value().integer(0);
+            let elems = (0..exps.len())
+                .map(|_| ctx.pop_val().unwrap())
+                .chain(repeat(zero))
+                .take(len)
+                .collect::<Vec<_>>();
+            let init = ctx.new_global_value().aggregate(elems);
+            let alloc_var = ctx.new_global_value().global_alloc(init);
+            ctx.set_value_name(alloc_var, self.ident.clone());
+            ctx.insert_const(self.ident.clone(), alloc_var)
+        }
     }
 }
 
 impl ToKoopaIR for item::ConstInitVal {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        self.const_exp.convert(ctx)
+        match self {
+            item::ConstInitVal::Normal(const_exp) => const_exp.convert(ctx),
+            item::ConstInitVal::Array(const_exps) => const_exps
+                .iter()
+                .try_for_each(|const_exp| const_exp.convert(ctx)),
+        }
     }
 
     #[inline]
     fn global_convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        self.const_exp.global_convert(ctx)
+        match self {
+            item::ConstInitVal::Normal(const_exp) => const_exp.global_convert(ctx),
+            item::ConstInitVal::Array(const_exps) => const_exps
+                .iter()
+                .try_for_each(|const_exp| const_exp.global_convert(ctx)),
+        }
     }
 }
 
@@ -238,44 +320,127 @@ impl ToKoopaIR for item::VarDecl {
 impl ToKoopaIR for item::VarDef {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         let ty = ctx.curr_def_type().unwrap();
-        // Allocate a target type of variable.
-        let alloc_var = ctx.new_local_value().alloc(ty);
-        ctx.curr_func_data_mut()
-            .dfg_mut()
-            .set_value_name(alloc_var, Some(format!("@{}", self.ident.clone())));
-        ctx.push_inst(alloc_var);
-        if let Some(ref init_val) = self.init_val {
-            init_val.convert(ctx)?;
-            // store the calculated value.
-            let val = ctx.pop_val().unwrap();
-            let store = ctx.new_local_value().store(val, alloc_var);
-            ctx.push_inst(store);
+        // Not an array
+        if self.arr_dim.is_empty() {
+            // Allocate a target type of variable.
+            let alloc_var = ctx.new_local_value().alloc(ty);
+            ctx.set_value_name(alloc_var, self.ident.clone());
+            ctx.push_inst(alloc_var);
+            if let Some(ref init_val) = self.init_val {
+                let item::InitVal::Normal(exp) = init_val else {
+                    bail!("Invalid assign: array to a integer")
+                };
+                exp.convert(ctx)?;
+                // store the calculated value.
+                let val = ctx.pop_val().unwrap();
+                let store = ctx.new_local_value().store(val, alloc_var);
+                ctx.push_inst(store);
+            }
+            ctx.insert_var(self.ident.clone(), alloc_var)
         }
-        ctx.insert_var(self.ident.clone(), alloc_var)
+        // is an array
+        else {
+            self.arr_dim
+                .iter()
+                .try_for_each(|const_exp| const_exp.convert(ctx))?;
+            // now it's one dimension
+            let array_shape = (0..self.arr_dim.len())
+                .map(|_| ctx.pop_i32())
+                .collect::<Result<Vec<_>>>()?;
+            let len = array_shape[0] as usize;
+            let alloc_var = ctx.new_local_value().alloc(Type::get_array(ty, len));
+            ctx.set_value_name(alloc_var, self.ident.clone());
+            ctx.push_inst(alloc_var);
+            if let Some(ref init_val) = self.init_val {
+                let item::InitVal::Array(exps) = init_val else {
+                    bail!("Invalid assign: integer to an array")
+                };
+                ensure!(
+                    exps.len() <= len,
+                    "Invalid assign: expect array length of {len} but found {}",
+                    exps.len()
+                );
+                exps.iter().rev().try_for_each(|exp| exp.convert(ctx))?;
+                // store it to avoid borrow problem.
+                let zero = ctx.new_local_value().integer(0);
+                let init_vals = (0..exps.len())
+                    .map(|_| ctx.pop_val().unwrap())
+                    .chain(repeat(zero))
+                    .take(len)
+                    .collect::<Vec<_>>();
+                for (idx, init_val) in init_vals.into_iter().enumerate() {
+                    // TODO: type check
+                    let index = ctx.new_local_value().integer(idx as i32);
+                    let get_elem_ptr = ctx.new_local_value().get_elem_ptr(alloc_var, index);
+                    let store = ctx.new_local_value().store(init_val, get_elem_ptr);
+                    ctx.push_inst(get_elem_ptr);
+                    ctx.push_inst(store);
+                }
+            }
+            ctx.insert_var(self.ident.clone(), alloc_var)
+        }
     }
 
     fn global_convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         let ty = ctx.curr_def_type().unwrap();
-        let init_val = if let Some(ref init_val) = self.init_val {
-            init_val.global_convert(ctx)?;
-            ctx.pop_val().unwrap()
+        if self.arr_dim.is_empty() {
+            let init_val = if let Some(ref init_val) = self.init_val {
+                init_val.global_convert(ctx)?;
+                ctx.pop_val().unwrap()
+            } else {
+                ctx.new_global_value().zero_init(ty.clone())
+            };
+            let val = ctx.new_global_value().global_alloc(init_val);
+            ctx.set_value_name(val, self.ident.clone());
+            ctx.insert_var(self.ident.clone(), val)
         } else {
-            ctx.new_global_value().zero_init(ty.clone())
-        };
-        let val = ctx.new_global_value().global_alloc(init_val);
-        ctx.insert_var(self.ident.clone(), val)
+            self.arr_dim
+                .iter()
+                .try_for_each(|const_exp| const_exp.global_convert(ctx))?;
+            let array_shape = (0..self.arr_dim.len())
+                .map(|_| ctx.pop_i32())
+                .collect::<Result<Vec<_>>>()?;
+            let len = array_shape[0] as usize;
+            let init = if let Some(ref init_val) = self.init_val {
+                let item::InitVal::Array(exps) = init_val else {
+                    bail!("Invalid assign: integer to an array")
+                };
+                exps.iter()
+                    .rev()
+                    .try_for_each(|exp| exp.global_convert(ctx))?;
+                let zero = ctx.new_global_value().integer(0);
+                let elems = (0..exps.len())
+                    .map(|_| ctx.pop_val().unwrap())
+                    .chain(repeat(zero))
+                    .take(len)
+                    .collect::<Vec<_>>();
+                ctx.new_global_value().aggregate(elems)
+            } else {
+                ctx.new_global_value()
+                    .zero_init(Type::get_array(Type::get_i32(), len))
+            };
+            let alloc_var = ctx.new_global_value().global_alloc(init);
+            ctx.set_value_name(alloc_var, self.ident.clone());
+            ctx.insert_var(self.ident.clone(), alloc_var)
+        }
     }
 }
 
 impl ToKoopaIR for item::InitVal {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        self.exp.convert(ctx)
+        match self {
+            item::InitVal::Normal(exp) => exp.convert(ctx),
+            item::InitVal::Array(exps) => exps.iter().try_for_each(|exp| exp.convert(ctx)),
+        }
     }
 
     #[inline]
     fn global_convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        self.exp.global_convert(ctx)
+        match self {
+            item::InitVal::Normal(exp) => exp.global_convert(ctx),
+            item::InitVal::Array(exps) => exps.iter().try_for_each(|exp| exp.global_convert(ctx)),
+        }
     }
 }
 
@@ -834,16 +999,36 @@ impl ToKoopaIR for item::PrimaryExp {
                 let val = match ctx.get_symbol(&l_val.ident).unwrap() {
                     // If it's a constant, because we store the value so we directly pull it out.
                     Symbol::Constant(const_val) => {
-                        let ValueKind::Integer(i) = ctx.get_val_kind(const_val) else {
-                            bail!("Not a valid const val");
-                        };
-                        ctx.new_local_value().integer(i.value())
+                        if l_val.index.is_empty() {
+                            let i = ctx
+                                .as_i32(const_val)
+                                .context("Not a valid const val as i32")?;
+                            ctx.new_local_value().integer(i)
+                        } else {
+                            l_val.index.iter().try_for_each(|exp| exp.convert(ctx))?;
+                            let len = ctx.pop_val().unwrap();
+                            let get_elem_ptr = ctx.new_local_value().get_elem_ptr(const_val, len);
+                            ctx.push_inst(get_elem_ptr);
+                            let load = ctx.new_local_value().load(get_elem_ptr);
+                            ctx.push_inst(load);
+                            load
+                        }
                     }
                     // If it's a variable, because we store the pointer so we load it and pull out.
                     Symbol::Variable(var_ptr) => {
-                        let load = ctx.new_local_value().load(var_ptr);
-                        ctx.push_inst(load);
-                        load
+                        if l_val.index.is_empty() {
+                            let load = ctx.new_local_value().load(var_ptr);
+                            ctx.push_inst(load);
+                            load
+                        } else {
+                            l_val.index.iter().try_for_each(|exp| exp.convert(ctx))?;
+                            let len = ctx.pop_val().unwrap();
+                            let get_elem_ptr = ctx.new_local_value().get_elem_ptr(var_ptr, len);
+                            ctx.push_inst(get_elem_ptr);
+                            let load = ctx.new_local_value().load(get_elem_ptr);
+                            ctx.push_inst(load);
+                            load
+                        }
                     }
                     Symbol::Callable(func_handle) => {
                         bail!("Cannot assign a value to a function {func_handle:?}")
@@ -902,7 +1087,7 @@ impl ToKoopaIR for item::LVal {
             .get_symbol(&self.ident)
             .ok_or(anyhow!("Variable {} not exists.", &*self.ident))?;
         let val = match symbol {
-            Symbol::Constant(const_val) => const_val,
+            Symbol::Constant(const_val) => bail!("Cannot modify a constant {const_val:?}"),
             Symbol::Variable(p_val) => p_val,
             Symbol::Callable(func_handle) => {
                 bail!("Cannot assign a value to a function {func_handle:?}")
@@ -923,11 +1108,9 @@ impl ToKoopaIR for koopa::ir::BinaryOp {
         let lhs = ctx.pop_val().unwrap();
 
         // Constant folding
-        if let ValueKind::Integer(int_lhs) = ctx.get_val_kind(lhs)
-            && let ValueKind::Integer(int_rhs) = ctx.get_val_kind(rhs)
+        if let Some(int_lhs) = ctx.as_i32(lhs)
+            && let Some(int_rhs) = ctx.as_i32(rhs)
         {
-            let int_lhs = int_lhs.value();
-            let int_rhs = int_rhs.value();
             let res = match self {
                 BinaryOp::NotEq => (int_lhs != int_rhs) as i32,
                 BinaryOp::Eq => (int_lhs == int_rhs) as i32,

@@ -59,10 +59,10 @@ IntSuffix: Box<dyn FnOnce(std::rc::Rc<str>) -> CompUnit> = {
 
     // 分支 B: 遇到赋值号或分号或逗号 -> 变量声明
     // 这里的逻辑是：解析可选的初始化值，以及后续可能的更多变量定义
-    <init: ("=" <InitVal>)?> <mut rest: ("," <VarDef>)*> ";" => {
+    <arr_dim: ("[" <ConstExp> "]")*><init_val: ("=" <InitVal>)?> <mut rest: ("," <VarDef>)*> ";" => {
         Box::new(move |ident| {
             // 将第一个变量（前缀解析的 ident + 这里解析的 init）构建出来
-            let first_def = VarDef { ident, init_val: init };
+            let first_def = VarDef { ident, arr_dim, init_val };
             // 插到列表最前面
             rest.insert(0, first_def);
             
@@ -95,21 +95,28 @@ ConstDecl: ConstDecl = "const" <btype: BType> <const_defs: Comma<ConstDef>> ";" 
     const_defs,
 };
 
-ConstDef: ConstDef = <ident: Ident> "=" <const_init_val: ConstInitVal> => ConstDef {
+ConstDef: ConstDef = <ident: Ident> <arr_dim: ("[" <ConstExp> "]")*> "=" <const_init_val: ConstInitVal> => ConstDef {
     ident,
+    arr_dim,
     const_init_val,
 };
 
-ConstInitVal: ConstInitVal = <const_exp: ConstExp> => ConstInitVal {const_exp};
+ConstInitVal: ConstInitVal = {
+    <const_exp: ConstExp> => ConstInitVal::Normal(const_exp),
+    "{" <dims: Comma<ConstInitVal>> "}" => ConstInitVal::Array(dims),
+}
 
 VarDecl: VarDecl = <btype: BType> <var_defs: Comma<VarDef>> ";" => VarDecl {
     btype,
     var_defs,
 };
 
-VarDef: VarDef = <ident: Ident> <init_val: ("=" <InitVal>)?> => VarDef {ident, init_val};
+VarDef: VarDef = <ident: Ident> <arr_dim: ("[" <ConstExp> "]")*> <init_val: ("=" <InitVal>)?> => VarDef {ident, arr_dim, init_val};
 
-InitVal: InitVal = <exp: Exp> => InitVal {exp};
+InitVal: InitVal = {
+    <exp: Exp> => InitVal::Normal(exp),
+    "{"<dims: Comma<InitVal>> "}" => InitVal::Array(dims),
+}
 
 FuncFParam: FuncFParam = <b_type: BType> <ident: Ident> => FuncFParam {<>};
 
@@ -171,7 +178,7 @@ OpenStmt: Stmt = {
         Stmt::IfStmt (IfStmt{cond, then_branch: Box::new(then_branch), else_branch: Some(Box::new(else_branch))}),
 }
 
-LVal: LVal = <ident: Ident> => LVal {ident};
+LVal: LVal = <ident: Ident> <index: ("[" <Exp> "]")*> => LVal {ident, index};
 
 Number: i32 = <num: IntConst> => <>;
 
