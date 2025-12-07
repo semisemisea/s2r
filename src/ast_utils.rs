@@ -1,6 +1,11 @@
 #[allow(unused)]
 pub mod item {
+    use std::iter::{repeat, repeat_n};
+
+    use crate::ast_utils::{AstGenContext, ToKoopaIR};
+
     use super::Ident;
+    use anyhow::ensure;
     use koopa::ir::{BinaryOp, Type};
 
     /// CompUnit ::= FuncDef;
@@ -98,6 +103,30 @@ pub mod item {
         Array(Vec<ConstInitVal>),
     }
 
+    impl ConstInitVal {
+        pub fn init_val_shape(&self, arr_shape: &[i32]) -> anyhow::Result<Vec<Option<&ConstExp>>> {
+            let Self::Array(c_init_vals) = self else {
+                unreachable!()
+            };
+            let capacity = arr_shape.iter().map(|x| *x as usize).product();
+            let mut v = Vec::with_capacity(capacity);
+            for init_val in c_init_vals {
+                match init_val {
+                    Self::Normal(const_exp) => v.push(Some(const_exp)),
+                    Self::Array(nested) => {
+                        ensure!(
+                            v.len() as i32 % *arr_shape.last().unwrap() == 0 && arr_shape.len() > 1,
+                            "Invalid initialization value."
+                        );
+                        v.extend(init_val.init_val_shape(&arr_shape[1..])?.into_iter());
+                    }
+                }
+            }
+            v.resize(capacity, None);
+            Ok(v)
+        }
+    }
+
     /// VarDecl ::= BType VarDef {"," VarDef} ";";
     ///
     /// A variable declaration with base type and one or more variable definitions.
@@ -124,6 +153,56 @@ pub mod item {
     pub enum InitVal {
         Normal(Exp),
         Array(Vec<InitVal>),
+    }
+
+    impl InitVal {
+        pub fn init_val_shape(&self, array_shape: &[i32]) -> anyhow::Result<Vec<Option<&Exp>>> {
+            let Self::Array(c_init_vals) = self else {
+                unreachable!()
+            };
+            let capacity = array_shape.iter().map(|x| *x as usize).product();
+            let mut v = Vec::with_capacity(capacity);
+            for init_val in c_init_vals {
+                if v.len() >= capacity {
+                    break;
+                }
+                match init_val {
+                    Self::Normal(exp) => v.push(Some(exp)),
+                    Self::Array(nested) => {
+                        // WARNING: Brace around scalar. Caused by over-nested, specifically,
+                        // when braces is more than dimension.
+                        // ensure!(
+                        //     array_shape.len() > 1,
+                        //     "Invalid initialization value: Brace around scalar, maybe because you nested too deep"
+                        // );
+                        let count = array_shape
+                            .iter()
+                            .skip(1)
+                            .rev()
+                            .scan(1, |stride, &dim| {
+                                *stride *= dim as usize;
+                                (v.len() % *stride == 0).then_some(())
+                            })
+                            .count();
+
+                        // WARNING: Brace around scalar. Caused when unaligned brace appear. Need
+                        // more demonstation.
+                        // ensure!(
+                        //     count > 0,
+                        //     "Invalid initialization value: Brace around scalar. This is a warning in C but compile error in SysY."
+                        // );
+                        v.extend(
+                            init_val
+                                .init_val_shape(&array_shape[array_shape.len() - count..])?
+                                .into_iter(),
+                        );
+                    }
+                }
+            }
+            // if the initialization values are more than needed, simply truncate it.
+            v.resize(capacity, None);
+            Ok(v)
+        }
     }
 
     /// Stmt ::= LVal "=" Exp ";" | "return" Exp ";";

@@ -45,7 +45,7 @@ impl GenerateAsm for FunctionData {
                 ctx.writeln(&format!("{}:", ctx.get_bb_name(bb, program)));
                 ctx.incr_indent();
             }
-            let insts_iter = /* self.dfg().bb(bb).params().iter().chain( */node.insts().keys()/* ) */;
+            let insts_iter = node.insts().keys();
             for inst in insts_iter {
                 // update the current instruction.
                 ctx.curr_inst_mut().replace(*inst);
@@ -53,8 +53,6 @@ impl GenerateAsm for FunctionData {
             }
         }
 
-        // add epilogue to the funciton at the end
-        // epilogue.finish(ctx);
         ctx.decr_indent();
         Ok(())
     }

@@ -1,7 +1,7 @@
 use crate::ast_utils::{AstGenContext, Symbol, ToKoopaIR, item};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use koopa::ir::{builder::EntityInfoQuerier, builder_traits::*, *};
-use std::iter::repeat;
+use std::{iter::repeat, ops::RangeBounds};
 
 impl ToKoopaIR for item::CompUnits {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
@@ -340,42 +340,78 @@ impl ToKoopaIR for item::VarDef {
         }
         // is an array
         else {
+            // for given expression like `a[x][y][z]`, we first take out each const exp in the []
+            // bracket and calculated it as i32(only type we accept)
             self.arr_dim
                 .iter()
+                .rev()
                 .try_for_each(|const_exp| const_exp.convert(ctx))?;
-            // now it's one dimension
+
+            // we calculate from `z` to `x`, and pop it from `x` to `x`.
+            // then we could get the array shape [x, y, z] as Vec<i32>
             let array_shape = (0..self.arr_dim.len())
                 .map(|_| ctx.pop_i32())
                 .collect::<Result<Vec<_>>>()?;
-            let len = array_shape[0] as usize;
-            let alloc_var = ctx.new_local_value().alloc(Type::get_array(ty, len));
+
+            // But for array type, we built arr[z] first, then brr[y][z], finally crr[x][y][z]
+            // so we need to do it in reverse order.
+            // at the end we can allocate that type and give it a name.
+            let arr_ty = array_shape
+                .iter()
+                .rev()
+                .map(|x| *x as usize)
+                .rfold(ty, Type::get_array);
+            let alloc_var = ctx.new_local_value().alloc(arr_ty);
             ctx.set_value_name(alloc_var, self.ident.clone());
             ctx.push_inst(alloc_var);
+
+            // We handle the possible initial value.
             if let Some(ref init_val) = self.init_val {
-                let item::InitVal::Array(exps) = init_val else {
+                // must be an array
+                if !matches!(init_val, item::InitVal::Array(_)) {
                     bail!("Invalid assign: integer to an array")
                 };
-                ensure!(
-                    exps.len() <= len,
-                    "Invalid assign: expect array length of {len} but found {}",
-                    exps.len()
-                );
-                exps.iter().rev().try_for_each(|exp| exp.convert(ctx))?;
-                // store it to avoid borrow problem.
+
+                // Flatten it up, filling the missing init val with None
+                // `a[2][2] = {{1}, 3}` => [Some(exp_1), None, Some(exp_3), None];
+                let exps = init_val.init_val_shape(&array_shape)?;
+
+                // Check every item, if `Some(exp)`, then calculate exp and take the value
+                // if None, then fill it with default value zero
                 let zero = ctx.new_local_value().integer(0);
-                let init_vals = (0..exps.len())
-                    .map(|_| ctx.pop_val().unwrap())
-                    .chain(repeat(zero))
-                    .take(len)
-                    .collect::<Vec<_>>();
-                for (idx, init_val) in init_vals.into_iter().enumerate() {
-                    // TODO: type check
-                    let index = ctx.new_local_value().integer(idx as i32);
-                    let get_elem_ptr = ctx.new_local_value().get_elem_ptr(alloc_var, index);
-                    let store = ctx.new_local_value().store(init_val, get_elem_ptr);
-                    ctx.push_inst(get_elem_ptr);
-                    ctx.push_inst(store);
+                let init_vals = exps
+                    .iter()
+                    .map(|exp| match exp {
+                        Some(exp) => {
+                            exp.convert(ctx)?;
+                            Ok(ctx.pop_val().unwrap())
+                        }
+                        None => Ok(zero),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                // Now store the initial value
+                fn initializer(
+                    array_shape: &[i32],
+                    init_val: &mut impl Iterator<Item = Value>,
+                    get_from: Value,
+                    ctx: &mut AstGenContext,
+                ) {
+                    if array_shape.is_empty() {
+                        let store = ctx
+                            .new_local_value()
+                            .store(init_val.next().unwrap(), get_from);
+                        ctx.push_inst(store);
+                        return;
+                    }
+                    for offset in 0..*array_shape.first().unwrap() {
+                        let index = ctx.new_local_value().integer(offset);
+                        let get_elem_ptr = ctx.new_local_value().get_elem_ptr(get_from, index);
+                        ctx.push_inst(get_elem_ptr);
+                        initializer(&array_shape[1..], init_val, get_elem_ptr, ctx);
+                    }
                 }
+                initializer(&array_shape, &mut init_vals.into_iter(), alloc_var, ctx);
             }
             ctx.insert_var(self.ident.clone(), alloc_var)
         }
@@ -995,7 +1031,34 @@ impl ToKoopaIR for item::PrimaryExp {
             }
             // LVal on the right side.
             // Meaning it's not defining but using a variable.
+            // We take the value and push to value stack to use.
             item::PrimaryExp::LVal(l_val) => {
+                // not a array
+                if l_val.ident.is_empty() {
+                    match ctx.get_symbol(&l_val.ident).unwrap() {
+                        Symbol::Constant(const_val) => ctx.push_val(const_val),
+                        Symbol::Variable(var_ptr) => {
+                            let load = ctx.new_local_value().load(var_ptr);
+                            ctx.push_inst(load);
+                            ctx.push_val(load);
+                        }
+                        Symbol::Callable(_function) => {
+                            bail!("You might forget to call the function.")
+                        }
+                    }
+                }
+                // visiting an array
+                else {
+                    let offset = l_val.index.iter().map(|x| {
+                        x.convert(ctx)?;
+                        ctx.pop_i32()
+                    });
+                    match ctx.get_symbol(&l_val.ident).unwrap() {
+                        Symbol::Constant(value) => todo!(),
+                        Symbol::Variable(value) => todo!(),
+                        Symbol::Callable(function) => bail!("Function can not be indexed."),
+                    }
+                }
                 let val = match ctx.get_symbol(&l_val.ident).unwrap() {
                     // If it's a constant, because we store the value so we directly pull it out.
                     Symbol::Constant(const_val) => {
