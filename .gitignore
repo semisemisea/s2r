@@ -6,3 +6,4 @@
 .git
 .DS_Store
 *.c
+*.out
