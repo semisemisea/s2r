@@ -1,8 +1,10 @@
+use koopa::opt::{Pass, PassManager};
 use lalrpop_util::lalrpop_mod;
 
 mod ast;
 mod ast_utils;
 mod ir2riscv;
+mod opt;
 mod riscv_utils;
 
 use crate::{
@@ -21,6 +23,7 @@ fn main() -> std::io::Result<()> {
     let output = args.next().unwrap();
 
     let input = std::fs::read_to_string(input)?;
+    #[cfg(debug_assertions)]
     println!("{input}");
 
     let ast = sysy::CompUnitsParser::new().parse(&input).unwrap();
@@ -29,6 +32,10 @@ fn main() -> std::io::Result<()> {
         eprintln!("Encounter error: {e}");
         std::process::exit(1);
     };
+    // let mut pass_manager = PassManager::new();
+    // let dce = opt::dce::DeadCodeElimination;
+    // pass_manager.register(Pass::Module(Box::new(dce)));
+    // pass_manager.run_passes(&mut ir_ctx.program);
     match mode.as_str() {
         "-koopa" => {
             let mut g = koopa::back::KoopaGenerator::new(Vec::new());

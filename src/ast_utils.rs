@@ -5,18 +5,18 @@ pub mod item {
     use crate::ast_utils::{AstGenContext, ToKoopaIR};
 
     use super::Ident;
-    use anyhow::ensure;
+    use anyhow::{Result, ensure};
     use koopa::ir::{BinaryOp, Type};
 
     /// CompUnit ::= FuncDef;
     ///
     /// The root of the AST, representing a complete compilation unit.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct CompUnits {
         pub comp_units: Vec<CompUnit>,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum CompUnit {
         FuncDef(FuncDef),
         Decl(Decl),
@@ -25,7 +25,7 @@ pub mod item {
     /// FuncDef ::= FuncType IDENT "(" ")" Block;
     ///
     /// A function definition with return type, name, and body.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct FuncDef {
         pub func_type: FuncType,
         pub ident: Ident,
@@ -37,6 +37,41 @@ pub mod item {
     pub struct FuncFParam {
         pub b_type: Type,
         pub ident: Ident,
+        pub arr_ty: Option<Vec<ConstExp>>,
+    }
+
+    impl FuncFParam {
+        pub fn ty_global(&self, ctx: &mut AstGenContext) -> Result<Type> {
+            self.arr_ty
+                .as_ref()
+                .map(|arr_ty| {
+                    Ok(Type::get_pointer(arr_ty.iter().try_rfold(
+                        self.b_type.clone(),
+                        |ty, off| -> Result<Type> {
+                            off.global_convert(ctx)?;
+                            let idx = ctx.pop_i32()? as usize;
+                            Ok(Type::get_array(ty, idx))
+                        },
+                    )?))
+                })
+                .unwrap_or(Ok(self.b_type.clone()))
+        }
+
+        pub fn ty(&self, ctx: &mut AstGenContext) -> Result<Type> {
+            self.arr_ty
+                .as_ref()
+                .map(|arr_ty| {
+                    Ok(Type::get_pointer(arr_ty.iter().try_rfold(
+                        self.b_type.clone(),
+                        |ty, off| -> Result<Type> {
+                            off.convert(ctx)?;
+                            let idx = ctx.pop_i32()? as usize;
+                            Ok(Type::get_array(ty, idx))
+                        },
+                    )?))
+                })
+                .unwrap_or(Ok(self.b_type.clone()))
+        }
     }
 
     /// FuncType ::= "int";
@@ -47,7 +82,7 @@ pub mod item {
     /// Block ::= "{" {BlockItem} "}";
     ///
     /// A block containing zero or more block items.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct Block {
         pub block_items: Vec<BlockItem>,
     }
@@ -55,7 +90,7 @@ pub mod item {
     /// BlockItem ::= Decl | Stmt;
     ///
     /// An item within a block, either a declaration or a statement.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum BlockItem {
         Decl(Decl),
         Stmt(Stmt),
@@ -64,7 +99,7 @@ pub mod item {
     /// Decl ::= ConstDecl | VarDecl;
     ///
     /// A declaration, either constant or variable.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum Decl {
         ConstDecl(ConstDecl),
         VarDecl(VarDecl),
@@ -73,7 +108,7 @@ pub mod item {
     /// ConstDecl ::= "const" BType ConstDef {"," ConstDef} ";";
     ///
     /// A constant declaration with base type and one or more constant definitions.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct ConstDecl {
         pub btype: BType,
         pub const_defs: Vec<ConstDef>,
@@ -87,7 +122,7 @@ pub mod item {
     /// ConstDef ::= IDENT "=" ConstInitVal;
     ///
     /// A constant definition with identifier and initial value.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct ConstDef {
         pub ident: Ident,
         pub arr_dim: Vec<ConstExp>,
@@ -97,31 +132,57 @@ pub mod item {
     /// ConstInitVal ::= ConstExp;
     ///
     /// The initial value of a constant.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum ConstInitVal {
         Normal(ConstExp),
         Array(Vec<ConstInitVal>),
     }
 
     impl ConstInitVal {
-        pub fn init_val_shape(&self, arr_shape: &[i32]) -> anyhow::Result<Vec<Option<&ConstExp>>> {
+        pub fn init_val_shape(&self, array_shape: &[i32]) -> Result<Vec<Option<&ConstExp>>> {
             let Self::Array(c_init_vals) = self else {
                 unreachable!()
             };
-            let capacity = arr_shape.iter().map(|x| *x as usize).product();
+            let capacity = array_shape.iter().map(|x| *x as usize).product();
             let mut v = Vec::with_capacity(capacity);
             for init_val in c_init_vals {
+                if v.len() >= capacity {
+                    break;
+                }
                 match init_val {
-                    Self::Normal(const_exp) => v.push(Some(const_exp)),
+                    Self::Normal(exp) => v.push(Some(exp)),
                     Self::Array(nested) => {
-                        ensure!(
-                            v.len() as i32 % *arr_shape.last().unwrap() == 0 && arr_shape.len() > 1,
-                            "Invalid initialization value."
+                        // WARNING: Brace around scalar. Caused by over-nested, specifically,
+                        // when braces is more than dimension.
+                        // ensure!(
+                        //     array_shape.len() > 1,
+                        //     "Invalid initialization value: Brace around scalar, maybe because you nested too deep"
+                        // );
+                        let count = array_shape
+                            .iter()
+                            .skip(1)
+                            .rev()
+                            .scan(1, |stride, &dim| {
+                                *stride *= dim as usize;
+                                (v.len() % *stride == 0).then_some(())
+                            })
+                            .count();
+
+                        // WARNING: Brace around scalar. Caused when unaligned brace appear. Need
+                        // more demonstation.
+                        // ensure!(
+                        //     count > 0,
+                        //     "Invalid initialization value: Brace around scalar. This is a warning in C but compile error in SysY."
+                        // );
+                        v.extend(
+                            init_val
+                                .init_val_shape(&array_shape[array_shape.len() - count..])?
+                                .into_iter(),
                         );
-                        v.extend(init_val.init_val_shape(&arr_shape[1..])?.into_iter());
                     }
                 }
             }
+            // if the initialization values are more than needed, simply truncate it.
             v.resize(capacity, None);
             Ok(v)
         }
@@ -130,7 +191,7 @@ pub mod item {
     /// VarDecl ::= BType VarDef {"," VarDef} ";";
     ///
     /// A variable declaration with base type and one or more variable definitions.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct VarDecl {
         pub btype: BType,
         pub var_defs: Vec<VarDef>,
@@ -139,7 +200,7 @@ pub mod item {
     /// VarDef ::= IDENT | IDENT "=" InitVal;
     ///
     /// A variable definition with identifier and optional initial value.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct VarDef {
         pub ident: Ident,
         pub arr_dim: Vec<ConstExp>,
@@ -149,14 +210,14 @@ pub mod item {
     /// InitVal ::= Exp;
     ///
     /// The initial value of a variable.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum InitVal {
         Normal(Exp),
         Array(Vec<InitVal>),
     }
 
     impl InitVal {
-        pub fn init_val_shape(&self, array_shape: &[i32]) -> anyhow::Result<Vec<Option<&Exp>>> {
+        pub fn init_val_shape(&self, array_shape: &[i32]) -> Result<Vec<Option<&Exp>>> {
             let Self::Array(c_init_vals) = self else {
                 unreachable!()
             };
@@ -208,7 +269,7 @@ pub mod item {
     /// Stmt ::= LVal "=" Exp ";" | "return" Exp ";";
     ///
     /// A statement, either an assignment or a return statement.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum Stmt {
         Assign(AssignStmt),
         Block(Block),
@@ -220,31 +281,31 @@ pub mod item {
         Continue(Continue),
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct Break;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct Continue;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct ReturnStmt {
         pub exp: Option<Exp>,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct AssignStmt {
         pub l_val: LVal,
         pub exp: Exp,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct IfStmt {
         pub cond: Exp,
         pub then_branch: Box<Stmt>,
         pub else_branch: Option<Box<Stmt>>,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct WhileStmt {
         pub cond: Exp,
         pub body: Box<Stmt>,
@@ -253,7 +314,7 @@ pub mod item {
     /// Exp ::= LOrExp;
     ///
     /// An expression, starting from logical OR expressions.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct Exp {
         pub lor_exp: LOrExp,
     }
@@ -261,7 +322,7 @@ pub mod item {
     /// LVal ::= IDENT;
     ///
     /// A left-value, representing a variable that can be assigned to.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct LVal {
         pub ident: Ident,
         pub index: Vec<Exp>,
@@ -270,7 +331,7 @@ pub mod item {
     /// ConstExp ::= Exp;
     ///
     /// A constant expression, must be evaluable at compile time.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct ConstExp {
         pub exp: Exp,
     }
@@ -278,14 +339,14 @@ pub mod item {
     /// UnaryExp ::= PrimaryExp | UnaryOp UnaryExp;
     ///
     /// A unary expression, either a primary expression or a unary operation applied to another unary expression.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum UnaryExp {
         PrimaryExp(Box<PrimaryExp>),
         Unary(UnaryOp, Box<UnaryExp>),
         FuncCall(FuncCall),
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct FuncCall {
         pub ident: Ident,
         pub args: Vec<Exp>,
@@ -294,7 +355,7 @@ pub mod item {
     /// UnaryOp ::= "+" | "-" | "!";
     ///
     /// A unary operator: positive, negative, or logical negation.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum UnaryOp {
         Add,
         Minus,
@@ -304,7 +365,7 @@ pub mod item {
     /// PrimaryExp ::= "(" Exp ")" | LVal | Number;
     ///
     /// A primary expression: parenthesized expression, left-value, or number literal.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum PrimaryExp {
         Exp(Exp),
         LVal(LVal),
@@ -314,7 +375,7 @@ pub mod item {
     /// AddExp ::= MulExp | AddExp ("+" | "-") MulExp;
     ///
     /// An additive expression with addition or subtraction.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum AddExp {
         MulExp(MulExp),
         Comp(Box<AddExp>, BinaryOp, MulExp),
@@ -323,7 +384,7 @@ pub mod item {
     /// MulExp ::= UnaryExp | MulExp ("*" | "/" | "%") UnaryExp;
     ///
     /// A multiplicative expression with multiplication, division, or modulo.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum MulExp {
         UnaryExp(UnaryExp),
         Comp(Box<MulExp>, BinaryOp, UnaryExp),
@@ -332,7 +393,7 @@ pub mod item {
     /// LOrExp ::= LAndExp | LOrExp "||" LAndExp;
     ///
     /// A logical OR expression with short-circuit evaluation.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum LOrExp {
         LAndExp(LAndExp),
         Comp(Box<LOrExp>, LAndExp),
@@ -341,7 +402,7 @@ pub mod item {
     /// LAndExp ::= EqExp | LAndExp "&&" EqExp;
     ///
     /// A logical AND expression with short-circuit evaluation.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum LAndExp {
         EqExp(EqExp),
         Comp(Box<LAndExp>, EqExp),
@@ -350,7 +411,7 @@ pub mod item {
     /// EqExp ::= RelExp | EqExp ("==" | "!=") RelExp;
     ///
     /// An equality expression with equal or not-equal comparison.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum EqExp {
         RelExp(RelExp),
         Comp(Box<EqExp>, BinaryOp, RelExp),
@@ -359,7 +420,7 @@ pub mod item {
     /// RelExp ::= AddExp | RelExp ("<" | ">" | "<=" | ">=") AddExp;
     ///
     /// A relational expression with comparison operators.
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum RelExp {
         AddExp(AddExp),
         Comp(Box<RelExp>, BinaryOp, AddExp),
@@ -671,7 +732,16 @@ impl AstGenContext {
     #[inline]
     /// Return the original basic_block handle
     pub fn set_curr_bb(&mut self, bb: BasicBlock) -> Option<BasicBlock> {
+        if self.curr_bb.is_some() && !self.is_complete_bb() {
+            let ret = self.new_local_value().ret(None);
+            self.push_inst(ret);
+        }
         self.curr_bb.replace(bb)
+    }
+
+    #[inline]
+    pub fn reset_curr_bb(&mut self) {
+        self.curr_bb = None
     }
 
     #[inline]
@@ -784,11 +854,25 @@ impl AstGenContext {
     pub fn set_value_name(&mut self, val: Value, ident: Ident) {
         if val.is_global() {
             self.program
-                .set_value_name(val, Some(format!("%{}", ident.clone())));
+                .set_value_name(val, Some(format!("%g_v_{}", ident.clone())));
         } else {
             self.curr_func_data_mut()
                 .dfg_mut()
-                .set_value_name(val, Some(format!("%{}", ident.clone())));
+                .set_value_name(val, Some(format!("%v_{}", ident.clone())));
+        }
+    }
+
+    pub fn is_pointer_to_array(&self, val: Value) -> bool {
+        if val.is_global() {
+            match self.program.borrow_value(val).ty().kind() {
+                TypeKind::Pointer(point_to) => matches!(point_to.kind(), TypeKind::Array(..)),
+                _ => false,
+            }
+        } else {
+            match self.curr_func_data().dfg().value(val).ty().kind() {
+                TypeKind::Pointer(point_to) => matches!(point_to.kind(), TypeKind::Array(..)),
+                _ => false,
+            }
         }
     }
 }

@@ -1,7 +1,6 @@
 use crate::ast_utils::{AstGenContext, Symbol, ToKoopaIR, item};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use koopa::ir::{builder::EntityInfoQuerier, builder_traits::*, *};
-use std::{iter::repeat, ops::RangeBounds};
 
 impl ToKoopaIR for item::CompUnits {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
@@ -33,11 +32,15 @@ impl ToKoopaIR for item::CompUnit {
 impl ToKoopaIR for item::FuncDef {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
         // Register the function to get handle
-        let func = ctx.program.new_func(FunctionData::new(
+        let data = FunctionData::new(
             format!("@{}", self.ident),
-            self.params.iter().map(|x| x.b_type.clone()).collect(),
+            self.params
+                .iter()
+                .map(|x| x.ty_global(ctx))
+                .collect::<Result<Vec<_>>>()?,
             self.func_type.clone(),
-        ));
+        );
+        let func = ctx.program.new_func(data);
         // Prologue
         // - Add function to the stack
         // - Insert the "entry" basic block and save it.
@@ -51,17 +54,13 @@ impl ToKoopaIR for item::FuncDef {
         // Recursive conversion.
         ctx.add_scope();
         let params = ctx.curr_func_data().params().to_vec();
-        let ty_name_and_val = self
-            .params
-            .iter()
-            .cloned()
-            .zip(params.iter())
-            .map(|(p, &v)| (p.b_type, p.ident, v));
-        for (ty, ident, param_val) in ty_name_and_val {
+        let ty_name_and_val = self.params.iter().cloned().zip(params.iter());
+        for (param_slot, &param_val) in ty_name_and_val {
+            let ty = param_slot.ty_global(ctx)?;
             let alloc = ctx.new_local_value().alloc(ty);
-            ctx.set_value_name(alloc, ident.clone());
+            ctx.set_value_name(alloc, param_slot.ident.clone().clone());
             let store = ctx.new_local_value().store(param_val, alloc);
-            ctx.insert_var(ident, alloc)?;
+            ctx.insert_var(param_slot.ident.clone(), alloc)?;
             ctx.push_inst(alloc);
             ctx.push_inst(store);
         }
@@ -73,25 +72,26 @@ impl ToKoopaIR for item::FuncDef {
 
         // Epilogue
         let ret = ctx.new_local_value().ret(None);
-        let bb_node = ctx.curr_func_data().layout().bbs().back_node().unwrap();
-
-        if !bb_node.insts().back_key().is_some_and(|&inst| {
-            matches!(
-                ctx.curr_func_data().dfg().value(inst).kind(),
-                ValueKind::Branch(_) | ValueKind::Jump(_) | ValueKind::Return(_)
-            )
-        }) {
-            // TODO: Should check the type of the function. Only the `void` type of function
-            // can implicitly add return at the end.
-            let bb_node = ctx
-                .curr_func_data_mut()
-                .layout_mut()
-                .bbs_mut()
-                .back_node_mut()
-                .unwrap();
-            bb_node.insts_mut().push_key_back(ret).unwrap();
-        }
-
+        ctx.push_inst(ret);
+        // let bb_node = ctx.curr_func_data().layout().bbs().back_node().unwrap();
+        //
+        // if !bb_node.insts().back_key().is_some_and(|&inst| {
+        //     matches!(
+        //         ctx.curr_func_data().dfg().value(inst).kind(),
+        //         ValueKind::Branch(_) | ValueKind::Jump(_) | ValueKind::Return(_)
+        //     )
+        // }) {
+        //     // TODO: Should check the type of the function. Only the `void` type of function
+        //     // can implicitly add return at the end.
+        //     let bb_node = ctx
+        //         .curr_func_data_mut()
+        //         .layout_mut()
+        //         .bbs_mut()
+        //         .back_node_mut()
+        //         .unwrap();
+        //     bb_node.insts_mut().push_key_back(ret).unwrap();
+        // }
+        ctx.reset_curr_bb();
         ctx.pop_func();
 
         Ok(())
@@ -157,6 +157,7 @@ impl ToKoopaIR for item::ConstDecl {
             self.btype.is_i32(),
             "Unknown type for constant declaration."
         );
+        ctx.set_def_type(self.btype.clone());
         self.const_defs
             .iter()
             .try_for_each(|const_def| const_def.convert(ctx))
@@ -168,6 +169,7 @@ impl ToKoopaIR for item::ConstDecl {
             self.btype.is_i32(),
             "Unknown type for constant declaration."
         );
+        ctx.set_def_type(self.btype.clone());
         self.const_defs
             .iter()
             .try_for_each(|const_def| const_def.global_convert(ctx))
@@ -176,6 +178,7 @@ impl ToKoopaIR for item::ConstDecl {
 
 impl ToKoopaIR for item::ConstDef {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        let ty = ctx.curr_def_type().unwrap();
         // not an array
         if self.arr_dim.is_empty() {
             // Get the init val
@@ -192,38 +195,68 @@ impl ToKoopaIR for item::ConstDef {
         }
         // is an array
         else {
-            self.arr_dim
+            let array_shape = self
+                .arr_dim
                 .iter()
-                .try_for_each(|const_exp| const_exp.convert(ctx))?;
-            let array_shape = (0..self.arr_dim.len())
-                .map(|_| ctx.pop_i32())
-                .collect::<Result<Vec<_>>>()?;
-            let len = array_shape[0] as usize;
-            let alloc_var = ctx
-                .new_local_value()
-                .alloc(Type::get_array(Type::get_i32(), len));
-            ctx.push_inst(alloc_var);
-            let item::ConstInitVal::Array(ref exps) = self.const_init_val else {
-                bail!("Invalid assign: integer to an array")
-            };
-            exps.iter()
                 .rev()
-                .try_for_each(|const_exp| const_exp.convert(ctx))?;
-            let zero = ctx.new_local_value().integer(0);
-            let const_init_vals = (0..exps.len())
-                .map(|_| ctx.pop_val().unwrap())
-                .chain(repeat(zero))
-                .take(len)
-                // TODO: We can change it to for loop to avoid `.collect()`
-                .collect::<Vec<_>>();
-            for (idx, c_init_val) in const_init_vals.into_iter().enumerate() {
-                let index = ctx.new_local_value().integer(idx as i32);
-                let get_elem_ptr = ctx.new_local_value().get_elem_ptr(alloc_var, index);
-                let store = ctx.new_local_value().store(c_init_val, get_elem_ptr);
-                ctx.push_inst(get_elem_ptr);
-                ctx.push_inst(store);
-            }
+                .map(|const_exp| {
+                    const_exp.convert(ctx)?;
+                    ctx.pop_i32()
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let arr_ty = array_shape
+                .iter()
+                .rev()
+                .map(|x| *x as usize)
+                .rfold(ty, Type::get_array);
+            let alloc_var = ctx.new_local_value().alloc(arr_ty);
             ctx.set_value_name(alloc_var, self.ident.clone());
+            ctx.push_inst(alloc_var);
+
+            if !matches!(self.const_init_val, item::ConstInitVal::Array(_)) {
+                bail!("Invalid assign: integer to an array")
+            }
+            let exps = self.const_init_val.init_val_shape(&array_shape)?;
+
+            let zero = ctx.new_local_value().integer(0);
+            let const_init_vals = exps
+                .iter()
+                .map(|const_exp| match const_exp {
+                    Some(exp) => {
+                        exp.convert(ctx)?;
+                        Ok(ctx.pop_val().unwrap())
+                    }
+                    None => Ok(zero),
+                })
+                // TODO: We can change it to for loop to avoid `.collect()`
+                .collect::<Result<Vec<_>>>()?;
+            fn initializer(
+                array_shape: &[i32],
+                init_val: &mut impl Iterator<Item = Value>,
+                get_from: Value,
+                ctx: &mut AstGenContext,
+            ) {
+                if array_shape.is_empty() {
+                    let store = ctx
+                        .new_local_value()
+                        .store(init_val.next().unwrap(), get_from);
+                    ctx.push_inst(store);
+                    return;
+                }
+                for offset in 0..*array_shape.first().unwrap() {
+                    let index = ctx.new_local_value().integer(offset);
+                    let get_elem_ptr = ctx.new_local_value().get_elem_ptr(get_from, index);
+                    ctx.push_inst(get_elem_ptr);
+                    initializer(&array_shape[1..], init_val, get_elem_ptr, ctx);
+                }
+            }
+            initializer(
+                &array_shape,
+                &mut const_init_vals.into_iter(),
+                alloc_var,
+                ctx,
+            );
             ctx.insert_const(self.ident.clone(), alloc_var)
         }
     }
@@ -238,26 +271,37 @@ impl ToKoopaIR for item::ConstDef {
         }
         // not an array
         else {
-            self.arr_dim
+            let array_shape = self
+                .arr_dim
                 .iter()
-                .try_for_each(|const_exp| const_exp.global_convert(ctx))?;
-            let array_shape = (0..self.arr_dim.len())
-                .map(|_| ctx.pop_i32())
+                .map(|const_exp| {
+                    const_exp.global_convert(ctx)?;
+                    ctx.pop_i32()
+                })
                 .collect::<Result<Vec<_>>>()?;
-            let len = array_shape[0] as usize;
-            let item::ConstInitVal::Array(ref exps) = self.const_init_val else {
+
+            if !matches!(self.const_init_val, item::ConstInitVal::Array(_)) {
                 bail!("Invalid assign: integer to an array")
             };
-            exps.iter()
-                .rev()
-                .try_for_each(|exp| exp.global_convert(ctx))?;
+            let exps = self.const_init_val.init_val_shape(&array_shape)?;
             let zero = ctx.new_global_value().integer(0);
-            let elems = (0..exps.len())
-                .map(|_| ctx.pop_val().unwrap())
-                .chain(repeat(zero))
-                .take(len)
-                .collect::<Vec<_>>();
-            let init = ctx.new_global_value().aggregate(elems);
+            let elems = exps
+                .iter()
+                .map(|exp| match exp {
+                    Some(exp) => {
+                        exp.global_convert(ctx)?;
+                        Ok(ctx.pop_val().unwrap())
+                    }
+                    None => Ok(zero),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let agg = array_shape.iter().rev().fold(elems, |elems, &dim_l| {
+                elems
+                    .chunks(dim_l as _)
+                    .map(|chunk| ctx.new_global_value().aggregate(chunk.to_owned()))
+                    .collect::<Vec<_>>()
+            });
+            let init = *agg.first().unwrap();
             let alloc_var = ctx.new_global_value().global_alloc(init);
             ctx.set_value_name(alloc_var, self.ident.clone());
             ctx.insert_const(self.ident.clone(), alloc_var)
@@ -342,15 +386,16 @@ impl ToKoopaIR for item::VarDef {
         else {
             // for given expression like `a[x][y][z]`, we first take out each const exp in the []
             // bracket and calculated it as i32(only type we accept)
-            self.arr_dim
+            // we calculate from `z` to `x`, and pop it from `x` to `z`.
+            // then we could get the array shape [x, y, z] as Vec<i32>
+            let array_shape = self
+                .arr_dim
                 .iter()
                 .rev()
-                .try_for_each(|const_exp| const_exp.convert(ctx))?;
-
-            // we calculate from `z` to `x`, and pop it from `x` to `x`.
-            // then we could get the array shape [x, y, z] as Vec<i32>
-            let array_shape = (0..self.arr_dim.len())
-                .map(|_| ctx.pop_i32())
+                .map(|const_exp| {
+                    const_exp.convert(ctx)?;
+                    ctx.pop_i32()
+                })
                 .collect::<Result<Vec<_>>>()?;
 
             // But for array type, we built arr[z] first, then brr[y][z], finally crr[x][y][z]
@@ -374,6 +419,7 @@ impl ToKoopaIR for item::VarDef {
 
                 // Flatten it up, filling the missing init val with None
                 // `a[2][2] = {{1}, 3}` => [Some(exp_1), None, Some(exp_3), None];
+                // `a[2][2] = {1, 3}` => [Some(exp_1), Some(exp_3), None, None];
                 let exps = init_val.init_val_shape(&array_shape)?;
 
                 // Check every item, if `Some(exp)`, then calculate exp and take the value
@@ -430,30 +476,45 @@ impl ToKoopaIR for item::VarDef {
             ctx.set_value_name(val, self.ident.clone());
             ctx.insert_var(self.ident.clone(), val)
         } else {
-            self.arr_dim
+            let array_shape = self
+                .arr_dim
                 .iter()
-                .try_for_each(|const_exp| const_exp.global_convert(ctx))?;
-            let array_shape = (0..self.arr_dim.len())
-                .map(|_| ctx.pop_i32())
+                .map(|const_exp| {
+                    const_exp.global_convert(ctx)?;
+                    ctx.pop_i32()
+                })
                 .collect::<Result<Vec<_>>>()?;
-            let len = array_shape[0] as usize;
+
+            let arr_ty = array_shape
+                .iter()
+                .map(|x| *x as usize)
+                .rfold(ty, Type::get_array);
+
             let init = if let Some(ref init_val) = self.init_val {
-                let item::InitVal::Array(exps) = init_val else {
+                if !matches!(init_val, item::InitVal::Array(_)) {
                     bail!("Invalid assign: integer to an array")
-                };
-                exps.iter()
-                    .rev()
-                    .try_for_each(|exp| exp.global_convert(ctx))?;
+                }
+                let exps = init_val.init_val_shape(&array_shape)?;
                 let zero = ctx.new_global_value().integer(0);
-                let elems = (0..exps.len())
-                    .map(|_| ctx.pop_val().unwrap())
-                    .chain(repeat(zero))
-                    .take(len)
-                    .collect::<Vec<_>>();
-                ctx.new_global_value().aggregate(elems)
+                let elems = exps
+                    .iter()
+                    .map(|exp| match exp {
+                        Some(exp) => {
+                            exp.global_convert(ctx)?;
+                            Ok(ctx.pop_val().unwrap())
+                        }
+                        None => Ok(zero),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let agg = array_shape.iter().rev().fold(elems, |elems, &dim_l| {
+                    elems
+                        .chunks(dim_l as _)
+                        .map(|chunk| ctx.new_global_value().aggregate(chunk.to_owned()))
+                        .collect::<Vec<_>>()
+                });
+                agg[0]
             } else {
-                ctx.new_global_value()
-                    .zero_init(Type::get_array(Type::get_i32(), len))
+                ctx.new_global_value().zero_init(arr_ty)
             };
             let alloc_var = ctx.new_global_value().global_alloc(init);
             ctx.set_value_name(alloc_var, self.ident.clone());
@@ -993,14 +1054,22 @@ impl ToKoopaIR for item::UnaryExp {
 
 impl ToKoopaIR for item::FuncCall {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
-        self.args
+        let args = self
+            .args
             .iter()
-            .rev()
-            .try_for_each(|exp| exp.convert(ctx))?;
-        let args = (0..self.args.len())
-            .map(|_| ctx.pop_val().unwrap())
-            .rev()
-            .collect::<Vec<_>>();
+            .map(|exp| {
+                exp.convert(ctx)?;
+                let arg = ctx.pop_val().unwrap();
+                if ctx.is_pointer_to_array(arg) {
+                    let zero = ctx.new_local_value().integer(0);
+                    let get_elem_ptr = ctx.new_local_value().get_elem_ptr(arg, zero);
+                    ctx.push_inst(get_elem_ptr);
+                    Ok(get_elem_ptr)
+                } else {
+                    Ok(arg)
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
         let Symbol::Callable(target_func) = ctx
             .get_global(&self.ident)
             .context(format!("Can't find function {}", &*self.ident))?
@@ -1034,70 +1103,61 @@ impl ToKoopaIR for item::PrimaryExp {
             // We take the value and push to value stack to use.
             item::PrimaryExp::LVal(l_val) => {
                 // not a array
-                if l_val.ident.is_empty() {
+                if l_val.index.is_empty() {
                     match ctx.get_symbol(&l_val.ident).unwrap() {
-                        Symbol::Constant(const_val) => ctx.push_val(const_val),
-                        Symbol::Variable(var_ptr) => {
-                            let load = ctx.new_local_value().load(var_ptr);
-                            ctx.push_inst(load);
-                            ctx.push_val(load);
+                        Symbol::Constant(const_val) => {
+                            let int = ctx.as_i32(const_val).unwrap();
+                            let int = ctx.new_local_value().integer(int);
+                            ctx.push_val(int);
                         }
-                        Symbol::Callable(_function) => {
+                        Symbol::Variable(var_ptr) => {
+                            if ctx.is_pointer_to_array(var_ptr) {
+                                ctx.push_val(var_ptr);
+                            } else {
+                                let load = ctx.new_local_value().load(var_ptr);
+                                ctx.push_inst(load);
+                                ctx.push_val(load);
+                            }
+                        }
+                        Symbol::Callable(..) => {
                             bail!("You might forget to call the function.")
                         }
                     }
                 }
                 // visiting an array
                 else {
-                    let offset = l_val.index.iter().map(|x| {
-                        x.convert(ctx)?;
-                        ctx.pop_i32()
-                    });
+                    let offset = l_val
+                        .index
+                        .iter()
+                        .map(|x| {
+                            x.convert(ctx)?;
+                            Ok(ctx.pop_val().unwrap())
+                        })
+                        .collect::<Result<Vec<_>>>()?;
                     match ctx.get_symbol(&l_val.ident).unwrap() {
-                        Symbol::Constant(value) => todo!(),
-                        Symbol::Variable(value) => todo!(),
-                        Symbol::Callable(function) => bail!("Function can not be indexed."),
+                        Symbol::Constant(array) | Symbol::Variable(array) => {
+                            let get_from = offset.iter().fold(array, |get_from, &index| {
+                                let inst = if ctx.is_pointer_to_array(get_from) {
+                                    ctx.new_local_value().get_elem_ptr(get_from, index)
+                                } else {
+                                    let load = ctx.new_local_value().load(get_from);
+                                    ctx.push_inst(load);
+                                    ctx.new_local_value().get_ptr(load, index)
+                                };
+                                ctx.push_inst(inst);
+                                inst
+                            });
+                            if ctx.is_pointer_to_array(get_from) {
+                                ctx.push_val(get_from);
+                            } else {
+                                let load = ctx.new_local_value().load(get_from);
+                                ctx.push_inst(load);
+                                ctx.push_val(load);
+                            }
+                        }
+                        Symbol::Callable(_function) => bail!("Function can not be indexed."),
                     }
                 }
-                let val = match ctx.get_symbol(&l_val.ident).unwrap() {
-                    // If it's a constant, because we store the value so we directly pull it out.
-                    Symbol::Constant(const_val) => {
-                        if l_val.index.is_empty() {
-                            let i = ctx
-                                .as_i32(const_val)
-                                .context("Not a valid const val as i32")?;
-                            ctx.new_local_value().integer(i)
-                        } else {
-                            l_val.index.iter().try_for_each(|exp| exp.convert(ctx))?;
-                            let len = ctx.pop_val().unwrap();
-                            let get_elem_ptr = ctx.new_local_value().get_elem_ptr(const_val, len);
-                            ctx.push_inst(get_elem_ptr);
-                            let load = ctx.new_local_value().load(get_elem_ptr);
-                            ctx.push_inst(load);
-                            load
-                        }
-                    }
-                    // If it's a variable, because we store the pointer so we load it and pull out.
-                    Symbol::Variable(var_ptr) => {
-                        if l_val.index.is_empty() {
-                            let load = ctx.new_local_value().load(var_ptr);
-                            ctx.push_inst(load);
-                            load
-                        } else {
-                            l_val.index.iter().try_for_each(|exp| exp.convert(ctx))?;
-                            let len = ctx.pop_val().unwrap();
-                            let get_elem_ptr = ctx.new_local_value().get_elem_ptr(var_ptr, len);
-                            ctx.push_inst(get_elem_ptr);
-                            let load = ctx.new_local_value().load(get_elem_ptr);
-                            ctx.push_inst(load);
-                            load
-                        }
-                    }
-                    Symbol::Callable(func_handle) => {
-                        bail!("Cannot assign a value to a function {func_handle:?}")
-                    }
-                };
-                ctx.push_val(val);
             }
         }
         Ok(())
@@ -1151,7 +1211,31 @@ impl ToKoopaIR for item::LVal {
             .ok_or(anyhow!("Variable {} not exists.", &*self.ident))?;
         let val = match symbol {
             Symbol::Constant(const_val) => bail!("Cannot modify a constant {const_val:?}"),
-            Symbol::Variable(p_val) => p_val,
+            Symbol::Variable(p_val) => {
+                if self.index.is_empty() {
+                    p_val
+                } else {
+                    let indices = self
+                        .index
+                        .iter()
+                        .map(|exp| {
+                            exp.convert(ctx)?;
+                            Ok(ctx.pop_val().unwrap())
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    indices.iter().fold(p_val, |get_from, &offset| {
+                        let p = if ctx.is_pointer_to_array(get_from) {
+                            ctx.new_local_value().get_elem_ptr(get_from, offset)
+                        } else {
+                            let n_get_from = ctx.new_local_value().load(get_from);
+                            ctx.push_inst(n_get_from);
+                            ctx.new_local_value().get_ptr(n_get_from, offset)
+                        };
+                        ctx.push_inst(p);
+                        p
+                    })
+                }
+            }
             Symbol::Callable(func_handle) => {
                 bail!("Cannot assign a value to a function {func_handle:?}")
             }
