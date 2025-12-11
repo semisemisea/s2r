@@ -10,7 +10,7 @@ A toy but my first compiler, implemented in Rust, which convert SysY programming
 - if/else - ✅
 - while/for - ✅
 - Function and global variables - (IR finished.)
-- Arrays
+- Arrays - (IR finished.)
 - Optimization
 
 ## Unimplemented features
