@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use koopa::ir::{BasicBlock, BinaryOp, Function, FunctionData, Program, Value, ValueKind};
+use koopa::ir::{BasicBlock, BinaryOp, Function, FunctionData, Program, Type, Value, ValueKind};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 #[allow(non_camel_case_types)]
@@ -459,6 +459,10 @@ impl AsmGenContext {
     }
 
     pub fn generate(&mut self, program: &Program) -> anyhow::Result<()> {
+        // Target platform is 32bit.
+        // So before actual generation we set the size of ptr.
+        Type::set_ptr_size(4);
+
         self.incr_indent();
         self.writeln(".data");
         for &glob_inst in program.inst_layout().iter() {
@@ -708,6 +712,41 @@ impl AsmGenContext {
 
     pub fn pop_epilogue(&mut self) {
         self.epilogue_stack.pop();
+    }
+
+    pub fn multiply(&mut self) {
+        import_reg_and_inst!();
+        let rhs = self.reg_pool.take_reg();
+        let lhs = self.reg_pool.take_reg();
+        let ans = self.reg_pool.alloc_temp();
+        self.write_inst(mul {
+            rd: ans,
+            rs1: lhs,
+            rs2: rhs,
+        });
+    }
+
+    pub fn add(&mut self) {
+        import_reg_and_inst!();
+        let rhs = self.reg_pool.take_reg();
+        let lhs = self.reg_pool.take_reg();
+        let ans = self.reg_pool.alloc_temp();
+        self.write_inst(add {
+            rd: ans,
+            rs1: lhs,
+            rs2: rhs,
+        });
+    }
+
+    pub fn add_sp(&mut self) {
+        import_reg_and_inst!();
+        let rhs = self.reg_pool.take_reg();
+        let ans = self.reg_pool.alloc_temp();
+        self.write_inst(add {
+            rd: ans,
+            rs1: sp,
+            rs2: rhs,
+        });
     }
 }
 

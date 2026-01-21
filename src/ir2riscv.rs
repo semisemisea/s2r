@@ -4,8 +4,8 @@ use crate::riscv_utils::{AsmGenContext, GenerateAsm};
 
 fn inst_size(func: &FunctionData, val: Value) -> usize {
     let data = func.dfg().value(val);
-    match func.dfg().value(val).kind() {
-        ValueKind::Alloc(_alloc) => 4,
+    match data.kind() {
+        ValueKind::Alloc(..) => ptr_size(data.ty()),
         _ => data.ty().size(),
     }
 }
@@ -92,8 +92,6 @@ impl GenerateAsm for FunctionData {
             }
         }
 
-        // ctx.stack_slots_debug(self);
-
         ctx.decr_indent();
         ctx.pop_epilogue();
         Ok(())
@@ -113,11 +111,83 @@ impl GenerateAsm for Value {
             ValueKind::Binary(op) => op.generate(program, ctx),
             ValueKind::BlockArgRef(block_arg_ref) => block_arg_ref.generate(program, ctx),
             ValueKind::Call(call) => call.generate(program, ctx),
-            _ => todo!(),
+            ValueKind::GetElemPtr(get_elem_ptr) => get_elem_ptr.generate(program, ctx),
+            ValueKind::GetPtr(get_ptr) => get_ptr.generate(program, ctx),
+            unimpl => todo!("{:?}", unimpl),
         }
     }
 }
 
+/// ```
+/// GetPtr {
+///     src: Value
+///     index: Value
+/// }
+/// ```
+impl GenerateAsm for values::GetPtr {
+    fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// ```
+/// GetElemPtr {
+///     src: Value, // alloc kind
+///     index: Value,
+/// }
+/// ```
+impl GenerateAsm for values::GetElemPtr {
+    // base_addr + elem_ty_size * index
+    fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
+        let global_flag = self.src().is_global();
+        let ptr_flag = if global_flag {
+            false
+        } else {
+            is_ptr(self.src(), ctx.curr_func_data(program))
+        };
+        // let global_flag = is_get_elem_ptr_from_global(self, ctx.curr_func_data(program));
+        // element type size
+        let elem_ty_size = if global_flag {
+            ptr_elem_size(program.borrow_value(self.src()).ty())
+        } else {
+            ptr_elem_size(ctx.curr_func_data(program).dfg().value(self.src()).ty())
+        };
+        // load index to register
+        ctx.load_to_register(program, self.index());
+        // load element type size to register
+        ctx.load_imm(elem_ty_size as _);
+        // do multipication
+        ctx.multiply();
+
+        // get the base address of array
+        if global_flag {
+            ctx.load_address(get_glob_var_name(self.src(), program));
+            ctx.load_from_address();
+            ctx.add();
+        } else if ptr_flag {
+            let pre_drifted_address = ctx.get_inst_offset(self.src()).unwrap();
+            ctx.load_word(pre_drifted_address as _);
+            ctx.add()
+        } else {
+            let rel_base_address = ctx.get_inst_offset(self.src()).unwrap();
+            // add to the base_address
+            ctx.load_imm(rel_base_address as _);
+            ctx.add();
+            // We are calculating relative offset. Add sp to make it absolute
+            ctx.add_sp();
+        }
+
+        ctx.save_word_at_curr_inst();
+        Ok(())
+    }
+}
+
+/// ```
+/// Call {
+///     callee: Function,
+///     args: Vec<Value>,
+/// }
+/// ```
 impl GenerateAsm for values::Call {
     fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
         // arity of the function
@@ -163,6 +233,11 @@ impl GenerateAsm for values::Call {
     }
 }
 
+/// ```
+/// BlockArgRef {
+///     index: usize, // the index of basic block arguments
+/// }
+/// ```
 impl GenerateAsm for values::BlockArgRef {
     fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
         let curr_inst = ctx.curr_inst_mut().unwrap();
@@ -288,9 +363,19 @@ impl GenerateAsm for values::Store {
             ctx.load_to_register(program, self.value());
             ctx.save_word_at_address();
         } else {
-            // store the value where it's located.
-            ctx.load_to_register(program, self.value());
-            ctx.save_word_at_inst(self.dest());
+            match ctx.curr_func_data(program).dfg().value(self.dest()).kind() {
+                ValueKind::GetElemPtr(_get_elem_ptr) => {
+                    ctx.load_to_register(program, self.dest());
+                    ctx.load_to_register(program, self.value());
+                    ctx.save_word_at_address();
+                }
+                normal_kind => {
+                    eprintln!("{normal_kind:?}");
+                    // store the value where it's located.
+                    ctx.load_to_register(program, self.value());
+                    ctx.save_word_at_inst(self.dest());
+                }
+            };
         }
         Ok(())
     }
@@ -322,4 +407,41 @@ fn get_glob_var_name(var: Value, program: &Program) -> String {
         .strip_prefix('%')
         .unwrap()
         .to_string()
+}
+
+// fn is_get_elem_ptr_from_global(inst: &values::GetElemPtr, func_data: &FunctionData) -> bool {
+//     if inst.src().is_global() {
+//         true
+//     } else if let ValueKind::GetElemPtr(child_inst) = func_data.dfg().value(inst.src()).kind() {
+//         is_get_elem_ptr_from_global(child_inst, func_data)
+//     } else {
+//         false
+//     }
+// }
+
+fn ptr_elem_size(ty: &koopa::ir::Type) -> usize {
+    use koopa::ir::TypeKind::*;
+    let Pointer(point_to) = ty.kind() else {
+        unreachable!();
+    };
+    let Array(elem_ty, _len) = point_to.kind() else {
+        unreachable!();
+    };
+    elem_ty.size()
+}
+
+fn ptr_size(ty: &koopa::ir::Type) -> usize {
+    use koopa::ir::TypeKind::*;
+    let Pointer(point_to) = ty.kind() else {
+        unreachable!();
+    };
+    point_to.size()
+}
+
+#[inline]
+fn is_ptr(val: Value, func_data: &FunctionData) -> bool {
+    matches!(
+        func_data.dfg().value(val).kind(),
+        ValueKind::GetElemPtr(..) | ValueKind::GetPtr(..)
+    )
 }
