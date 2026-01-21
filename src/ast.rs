@@ -232,11 +232,16 @@ impl ToKoopaIR for item::ConstDef {
                     ctx.push_inst(store);
                     return;
                 }
-                for offset in 0..*array_shape.first().unwrap() {
+                for offset in 0..*array_shape.last().unwrap() {
                     let index = ctx.new_local_value().integer(offset);
                     let get_elem_ptr = ctx.new_local_value().get_elem_ptr(get_from, index);
                     ctx.push_inst(get_elem_ptr);
-                    initializer(&array_shape[1..], init_val, get_elem_ptr, ctx);
+                    initializer(
+                        &array_shape[..array_shape.len() - 1],
+                        init_val,
+                        get_elem_ptr,
+                        ctx,
+                    );
                 }
             }
             initializer(
@@ -438,11 +443,16 @@ impl ToKoopaIR for item::VarDef {
                         ctx.push_inst(store);
                         return;
                     }
-                    for offset in 0..*array_shape.first().unwrap() {
+                    for offset in 0..*array_shape.last().unwrap() {
                         let index = ctx.new_local_value().integer(offset);
                         let get_elem_ptr = ctx.new_local_value().get_elem_ptr(get_from, index);
                         ctx.push_inst(get_elem_ptr);
-                        initializer(&array_shape[1..], init_val, get_elem_ptr, ctx);
+                        initializer(
+                            &array_shape[..array_shape.len() - 1],
+                            init_val,
+                            get_elem_ptr,
+                            ctx,
+                        );
                     }
                 }
                 initializer(&array_shape, &mut init_vals.into_iter(), alloc_var, ctx);
