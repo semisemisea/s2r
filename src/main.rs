@@ -1,10 +1,10 @@
-use koopa::opt::{Pass, PassManager};
 use lalrpop_util::lalrpop_mod;
 
 mod ast;
 mod ast_utils;
 mod ir2riscv;
 mod opt;
+mod register_alloc;
 mod riscv_utils;
 
 use crate::{
@@ -55,6 +55,21 @@ fn main() -> std::io::Result<()> {
             let mut asm_ctx = AsmGenContext::new();
             asm_ctx.generate(&program).unwrap();
             std::fs::write(output.clone(), asm_ctx.end())?;
+        }
+        "test" => {
+            let mut g = koopa::back::KoopaGenerator::new(Vec::new());
+            g.generate_on(&ir_ctx.end()).unwrap();
+            let ir_text = std::str::from_utf8(&g.writer()).unwrap().to_string();
+            #[cfg(debug_assertions)]
+            eprintln!("{ir_text}");
+            std::fs::write("hello.koopa", ir_text.clone())?;
+
+            let driver = koopa::front::Driver::from(ir_text);
+            // Because we want name to be unique :)
+            let program = driver.generate_program().unwrap();
+            let mut asm_ctx = AsmGenContext::new();
+            asm_ctx.generate(&program).unwrap();
+            std::fs::write("hello.riscv", asm_ctx.end())?;
         }
         invalid_mode => {
             eprintln!("Invalid output mode: {invalid_mode}");

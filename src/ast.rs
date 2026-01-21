@@ -70,27 +70,15 @@ impl ToKoopaIR for item::FuncDef {
             .try_for_each(|block_item| block_item.convert(ctx))?;
         ctx.del_scope();
 
-        // Epilogue
+        // Epilogue at the end:
+        // For all function we explicitly add return None at the end, equivalent to `return ;`
+        // This is because non-void function must have return statement at the end, a.k.a completed
+        // When a function is completed, any return statement added later is abandoned.
+        // But void function can have implicit return statement, a.k.a incompleted
+        // So we add extra return to fix it.
         let ret = ctx.new_local_value().ret(None);
         ctx.push_inst(ret);
-        // let bb_node = ctx.curr_func_data().layout().bbs().back_node().unwrap();
-        //
-        // if !bb_node.insts().back_key().is_some_and(|&inst| {
-        //     matches!(
-        //         ctx.curr_func_data().dfg().value(inst).kind(),
-        //         ValueKind::Branch(_) | ValueKind::Jump(_) | ValueKind::Return(_)
-        //     )
-        // }) {
-        //     // TODO: Should check the type of the function. Only the `void` type of function
-        //     // can implicitly add return at the end.
-        //     let bb_node = ctx
-        //         .curr_func_data_mut()
-        //         .layout_mut()
-        //         .bbs_mut()
-        //         .back_node_mut()
-        //         .unwrap();
-        //     bb_node.insts_mut().push_key_back(ret).unwrap();
-        // }
+
         ctx.reset_curr_bb();
         ctx.pop_func();
 

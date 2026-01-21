@@ -854,7 +854,7 @@ impl AstGenContext {
     pub fn set_value_name(&mut self, val: Value, ident: Ident) {
         if val.is_global() {
             self.program
-                .set_value_name(val, Some(format!("%g_v_{}", ident.clone())));
+                .set_value_name(val, Some(format!("%gv_{}", ident.clone())));
         } else {
             self.curr_func_data_mut()
                 .dfg_mut()
