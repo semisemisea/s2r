@@ -53,6 +53,20 @@ pub enum Register {
     a7,
 }
 
+impl Register {
+    #[inline]
+    fn is_temp(&self) -> bool {
+        use Register::*;
+        matches!(self, t0 | t1 | t2 | t3 | t4 | t5 | t6)
+    }
+
+    #[inline]
+    fn is_arg(&self) -> bool {
+        use Register::*;
+        matches!(self, a0 | a1 | a2 | a3 | a4 | a5 | a6 | a7)
+    }
+}
+
 #[allow(non_camel_case_types)]
 #[allow(unused)]
 /// Enum representing RISC-V instructions.
@@ -61,7 +75,15 @@ pub enum Register {
 pub enum RiscvInst {
     /// Load immediate: `li rd, imm`
     /// Loads a 32-bit immediate value into register `rd`.
-    li { rd: Register, imm: i32 },
+    li {
+        rd: Register,
+        imm: i32,
+    },
+    /// Load Global data
+    la {
+        rd: Register,
+        label: String,
+    },
     /// Add: `add rd, rs1, rs2`
     /// Adds `rs1` and `rs2`, stores result in `rd`.
     add {
@@ -99,10 +121,16 @@ pub enum RiscvInst {
     },
     /// Set equal to zero: `seqz rd, rs`
     /// Sets `rd` to 1 if `rs` == 0, else 0.
-    seqz { rd: Register, rs: Register },
+    seqz {
+        rd: Register,
+        rs: Register,
+    },
     /// Set not equal to zero: `snez rd, rs`
     /// Sets `rd` to 1 if `rs` != 0, else 0.
-    snez { rd: Register, rs: Register },
+    snez {
+        rd: Register,
+        rs: Register,
+    },
     /// Exclusive OR: `xor rd, rs1, rs2`
     /// Bitwise XOR of `rs1` and `rs2`, stores result in `rd`.
     xor {
@@ -168,7 +196,10 @@ pub enum RiscvInst {
     },
     /// Move: `mv rd, rs`
     /// Copies value from `rs` to `rd`.
-    mv { rd: Register, rs: Register },
+    mv {
+        rd: Register,
+        rs: Register,
+    },
     /// Load word: `lw rd, imm12(rs)`
     /// Loads 32-bit value from address `rs + imm12` into `rd`.
     lw {
@@ -185,7 +216,10 @@ pub enum RiscvInst {
     },
     /// Jump and link: `jal rd, offset`
     /// Jumps to address `PC + offset`, stores return address in `rd`.
-    jal { rd: Register, offset: i32 },
+    jal {
+        rd: Register,
+        offset: i32,
+    },
     /// Jump and link register: `jalr rd, rs1, offset`
     /// Jumps to address `rs1 + offset`, stores return address in `rd`.
     jalr {
@@ -240,19 +274,31 @@ pub enum RiscvInst {
     ret,
     /// Jump to label: `j label`
     /// Jump to a label unconditionally.
-    j { label: String },
+    j {
+        label: String,
+    },
     /// Branch if equal to zero: `beqz rs, label`
     /// Branches to label if `rs == 0`
-    beqz { rs: Register, label: String },
+    beqz {
+        rs: Register,
+        label: String,
+    },
     /// Branch if not equal to zero: `bnez rs, label`
     /// Branches to label if `rs != 0`
-    bnez { rs: Register, label: String },
+    bnez {
+        rs: Register,
+        label: String,
+    },
+    call {
+        callee: String,
+    },
 }
 
 impl std::fmt::Display for RiscvInst {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RiscvInst::li { rd, imm } => write!(f, "li    {}, {}", rd, imm),
+            RiscvInst::la { rd, label } => write!(f, "la    {}, {}", rd, label),
             RiscvInst::add { rd, rs1, rs2 } => write!(f, "add   {}, {}, {}", rd, rs1, rs2),
             RiscvInst::addi { rd, rs, imm12 } => write!(f, "addi  {}, {}, {}", rd, rs, imm12),
             RiscvInst::sub { rd, rs1, rs2 } => write!(f, "sub   {}, {}, {}", rd, rs1, rs2),
@@ -284,6 +330,7 @@ impl std::fmt::Display for RiscvInst {
             RiscvInst::j { label } => write!(f, "j     {}", label),
             RiscvInst::beqz { rs, label } => write!(f, "beqz  {}, {}", rs, label),
             RiscvInst::bnez { rs, label } => write!(f, "bnez  {}, {}", rs, label),
+            RiscvInst::call { callee } => write!(f, "call  {}", callee),
         }
     }
 }
@@ -294,7 +341,7 @@ impl std::fmt::Display for Register {
     }
 }
 
-macro_rules! import {
+macro_rules! import_reg_and_inst {
     () => {
         #[allow(unused)]
         use Register::*;
@@ -305,35 +352,48 @@ const SHIFT_WIDTH: usize = 2;
 const TEMP_BASE_U8_REPR: u8 = 5;
 
 pub struct RegisterManager {
-    usage: u8,
+    temp_usage: u8,
+    pool: Vec<Register>,
 }
 
 impl RegisterManager {
     fn new() -> RegisterManager {
-        RegisterManager { usage: 0 }
+        RegisterManager {
+            temp_usage: 0,
+            pool: Vec::with_capacity(16),
+        }
     }
 
     #[inline]
-    fn alloc(&mut self) -> Register {
-        let ret = (TEMP_BASE_U8_REPR + self.usage).try_into().unwrap();
-        self.incr();
+    fn alloc_temp(&mut self) -> Register {
+        let ret = (TEMP_BASE_U8_REPR + self.temp_usage).try_into().unwrap();
+        self.temp_incr();
+        self.pool.push(ret);
         ret
     }
 
-    #[inline]
-    fn incr(&mut self) {
-        debug_assert!(self.usage < 7, "run out of tempoprary register");
-        self.usage += 1;
+    fn alloc_ret(&mut self) {
+        use Register::a0;
+        self.pool.push(a0);
     }
 
     #[inline]
-    fn decr(&mut self) {
-        self.usage -= 1;
+    fn temp_incr(&mut self) {
+        debug_assert!(self.temp_usage < 7, "run out of tempoprary register");
+        self.temp_usage += 1;
     }
 
-    fn take(&mut self) -> Register {
-        self.decr();
-        (TEMP_BASE_U8_REPR + self.usage).try_into().unwrap()
+    #[inline]
+    fn temp_decr(&mut self) {
+        self.temp_usage -= 1;
+    }
+
+    fn take_reg(&mut self) -> Register {
+        let ret = self.pool.pop().unwrap();
+        if ret.is_temp() {
+            self.temp_decr();
+        }
+        ret
     }
 }
 
@@ -387,21 +447,92 @@ impl AsmGenContext {
         self.stack_slots.insert(val, offset);
     }
 
+    // pub fn stack_slots_debug(&self, func: &FunctionData) {
+    //     for (&k, &v) in self.stack_slots.iter() {
+    //         let kind = func.dfg().value(k);
+    //         eprintln!("{:?} {} {}", k, kind.ty(), v);
+    //     }
+    // }
+
     pub fn get_inst_offset(&self, val: Value) -> Option<usize> {
         self.stack_slots.get(&val).copied()
     }
 
     pub fn generate(&mut self, program: &Program) -> anyhow::Result<()> {
         self.incr_indent();
-        self.writeln(".text");
-        self.writeln(".globl main");
+        self.writeln(".data");
+        for &glob_inst in program.inst_layout().iter() {
+            let glob_inst_data = program.borrow_value(glob_inst);
+            let name = glob_inst_data
+                .name()
+                .clone()
+                .unwrap()
+                .strip_prefix('%')
+                .unwrap()
+                .to_string();
+            self.writeln(&format!(".globl {name}",));
+
+            self.decr_indent();
+            self.writeln(&format!("{name}:"));
+            self.incr_indent();
+
+            let ValueKind::GlobalAlloc(glob_alloc) = glob_inst_data.kind() else {
+                unreachable!();
+            };
+            let init_val = glob_alloc.init();
+            let init_val_data = program.borrow_value(init_val);
+            match init_val_data.kind() {
+                ValueKind::ZeroInit(..) => {
+                    self.writeln(&format!(".zero {}", init_val_data.ty().size()));
+                }
+                ValueKind::Integer(int) => {
+                    self.writeln(&format!(".word {}", int.value()));
+                }
+                ValueKind::Aggregate(agg) => {
+                    use koopa::ir::values::Aggregate;
+
+                    // Create a recursive function to handle
+                    fn recursive(agg: &Aggregate, ctx: &mut AsmGenContext, program: &Program) {
+                        for &elem in agg.elems() {
+                            let elem_data = program.borrow_value(elem);
+                            match elem_data.kind() {
+                                ValueKind::Aggregate(agg) => {
+                                    recursive(agg, ctx, program);
+                                }
+                                ValueKind::Integer(int) => {
+                                    ctx.writeln(&format!(".word {}", int.value()))
+                                }
+                                _ => {
+                                    todo!()
+                                }
+                            }
+                        }
+                    }
+                    recursive(agg, self, program);
+                }
+                _ => {}
+            };
+        }
         self.decr_indent();
+        self.writeln("");
 
         for &func in program.func_layout().iter() {
+            // skip if it's declaration
+            if program.func(func).layout().entry_bb().is_none() {
+                continue;
+            };
+
+            let name = program.func(func).name().strip_prefix("@").unwrap();
+            self.incr_indent();
+            self.writeln(".text");
+            self.writeln(&format!(".globl {name}"));
+            self.decr_indent();
+
             self.push_func(func);
             let func_data = program.func(func);
             func_data.generate(program, self)?;
             self.pop_func();
+            self.writeln("");
         }
         Ok(())
     }
@@ -431,36 +562,43 @@ impl AsmGenContext {
         self.buf += format!("{}\n", inst).as_str();
     }
 
-    pub fn prologue(&mut self, offset: usize) {
-        import!();
-        // According to RISC-V, sp_offset should be aligned with 16.
-        let offset = if (offset & 0x0F) != 0 {
-            (offset + 0x0F) >> 4 << 4
-        } else {
-            offset
-        } as i32;
+    pub fn prologue(&mut self, offset: usize, call_ra: bool) {
+        import_reg_and_inst!();
+        let offset = offset as i32;
 
         // if offset can't represent in imm12, we should use a temporary register.
-        if (offset >> 12) != 0 {
-            self.write_inst(li {
-                rd: t0,
-                imm: -offset,
-            });
-            self.write_inst(add {
-                rd: sp,
+        if offset > 0 {
+            if (offset >> 12) != 0 {
+                self.write_inst(li {
+                    rd: t0,
+                    imm: -offset,
+                });
+                self.write_inst(add {
+                    rd: sp,
+                    rs1: sp,
+                    rs2: t0,
+                });
+            } else {
+                self.write_inst(addi {
+                    rd: sp,
+                    rs: sp,
+                    imm12: -offset,
+                });
+            }
+        }
+
+        if call_ra {
+            self.write_inst(sw {
+                rs2: ra,
+                imm12: offset - 4,
                 rs1: sp,
-                rs2: t0,
-            });
-        } else {
-            self.write_inst(addi {
-                rd: sp,
-                rs: sp,
-                imm12: -offset,
             });
         }
+
         self.epilogue_stack.push(Epilogue {
             offset,
-            done: false,
+            call_ra,
+            finished_once: false,
         })
     }
 
@@ -486,23 +624,68 @@ impl AsmGenContext {
         program.func(*self.curr_func_hanlde())
     }
 
-    pub fn load_to_register(&mut self, program: &Program, val: Value) {
+    pub fn load_to_para_register(&mut self, program: &Program, val: Value, reg: Register) {
+        import_reg_and_inst!();
         let data = self.curr_func_data(program).dfg().value(val);
         if let ValueKind::Integer(int) = data.kind() {
-            self.load_imm(int.value());
-            return;
-        }
-        if !data.ty().is_unit() {
+            self.write_inst(li {
+                rd: reg,
+                imm: int.value(),
+            });
+        } else if !data.ty().is_unit() {
             let offset = self.get_inst_offset(val).unwrap() as i32;
-            self.load_word(offset);
+            self.write_inst(lw {
+                rd: reg,
+                imm12: offset,
+                rs: sp,
+            });
+        }
+    }
+
+    pub fn load_to_register(&mut self, program: &Program, val: Value) {
+        // TODO: global load to register
+        if val.is_global() {
+            self.load_address(
+                program
+                    .borrow_value(val)
+                    .name()
+                    .clone()
+                    .unwrap()
+                    .strip_prefix('%')
+                    .unwrap()
+                    .to_string(),
+            );
+        } else {
+            let data = self.curr_func_data(program).dfg().value(val);
+            match data.kind() {
+                ValueKind::Integer(int) => {
+                    self.load_imm(int.value());
+                }
+                ValueKind::FuncArgRef(arg_ref) if arg_ref.index() < 8 => {
+                    // let idx = arg_ref.index();
+                    // if idx < 8 {
+                    use Register::a0;
+                    let reg = (a0 as u8 + arg_ref.index() as u8).try_into().unwrap();
+                    self.alloc_para_reg(reg);
+                    // } else {
+                    //     let offset = self.get_inst_offset(val).unwrap() as i32;
+                    //     self.load_word(offset);
+                    // }
+                }
+                _ if !data.ty().is_unit() => {
+                    let offset = self.get_inst_offset(val).unwrap() as i32;
+                    self.load_word(offset);
+                }
+                _ => (),
+            }
         }
     }
 
     pub fn save_word_at_curr_inst(&mut self) {
-        import!();
+        import_reg_and_inst!();
         let curr_inst = self.curr_inst.unwrap();
         let offset = self.get_inst_offset(curr_inst).unwrap() as i32;
-        let source = self.reg_pool.take();
+        let source = self.reg_pool.take_reg();
         self.write_inst(sw {
             rs2: source,
             imm12: offset,
@@ -513,35 +696,63 @@ impl AsmGenContext {
     pub fn curr_inst_mut(&mut self) -> &mut Option<Value> {
         &mut self.curr_inst
     }
+
+    pub fn alloc_ret_reg(&mut self) {
+        self.reg_pool.alloc_ret();
+    }
+
+    pub fn alloc_para_reg(&mut self, reg: Register) {
+        assert!(reg.is_arg());
+        self.reg_pool.pool.push(reg)
+    }
+
+    pub fn pop_epilogue(&mut self) {
+        self.epilogue_stack.pop();
+    }
 }
 
 #[derive(Clone)]
 pub struct Epilogue {
     offset: i32,
-    done: bool,
+    call_ra: bool,
+    finished_once: bool,
 }
 
 impl Epilogue {
-    pub fn finish(&mut self, ctx: &mut AsmGenContext) {
-        import!();
-        self.done = true;
-        if (self.offset >> 12) != 0 {
-            let temp_reg = ctx.reg_pool.alloc();
-            ctx.write_inst(li {
-                rd: temp_reg,
-                imm: self.offset,
-            });
-            ctx.write_inst(add {
-                rd: sp,
-                rs1: sp,
-                rs2: temp_reg,
-            });
-        } else {
-            ctx.write_inst(addi {
-                rd: sp,
+    pub fn mark(&mut self) -> &Epilogue {
+        self.finished_once = true;
+        &*self
+    }
+
+    pub fn finish(&self, ctx: &mut AsmGenContext) {
+        import_reg_and_inst!();
+        // self.finished_once = true;
+        if self.call_ra {
+            ctx.write_inst(lw {
+                rd: ra,
+                imm12: self.offset - 4,
                 rs: sp,
-                imm12: self.offset,
             });
+        }
+        if self.offset > 0 {
+            if (self.offset >> 12) != 0 {
+                let temp_reg = ctx.reg_pool.alloc_temp();
+                ctx.write_inst(li {
+                    rd: temp_reg,
+                    imm: self.offset,
+                });
+                ctx.write_inst(add {
+                    rd: sp,
+                    rs1: sp,
+                    rs2: temp_reg,
+                });
+            } else {
+                ctx.write_inst(addi {
+                    rd: sp,
+                    rs: sp,
+                    imm12: self.offset,
+                });
+            }
         }
         ctx.write_inst(ret);
     }
@@ -549,7 +760,7 @@ impl Epilogue {
 
 impl Drop for Epilogue {
     fn drop(&mut self) {
-        if !self.done {
+        if !self.finished_once {
             eprintln!("Epilogue must be done before droped.");
         }
     }
@@ -559,8 +770,8 @@ impl Drop for Epilogue {
 impl AsmGenContext {
     #[inline]
     pub fn load_imm(&mut self, imm: i32) {
-        import!();
-        let temp_reg = self.reg_pool.alloc();
+        import_reg_and_inst!();
+        let temp_reg = self.reg_pool.alloc_temp();
         self.write_inst(li { rd: temp_reg, imm });
     }
 
@@ -571,8 +782,8 @@ impl AsmGenContext {
 
     #[inline]
     pub fn save_word_with_offset(&mut self, offset: i32) {
-        import!();
-        let temp_reg = self.reg_pool.take();
+        import_reg_and_inst!();
+        let temp_reg = self.reg_pool.take_reg();
         self.write_inst(sw {
             rs2: temp_reg,
             imm12: offset,
@@ -581,9 +792,21 @@ impl AsmGenContext {
     }
 
     #[inline]
+    pub fn save_word_at_address(&mut self) {
+        import_reg_and_inst!();
+        let val_reg = self.reg_pool.take_reg();
+        let address_reg = self.reg_pool.take_reg();
+        self.write_inst(sw {
+            rs2: val_reg,
+            imm12: 0,
+            rs1: address_reg,
+        });
+    }
+
+    #[inline]
     pub fn load_word(&mut self, offset: i32) {
-        import!();
-        let temp_reg = self.reg_pool.alloc();
+        import_reg_and_inst!();
+        let temp_reg = self.reg_pool.alloc_temp();
         self.write_inst(lw {
             rd: temp_reg,
             imm12: offset,
@@ -591,11 +814,31 @@ impl AsmGenContext {
         });
     }
 
+    pub fn load_address(&mut self, label: String) {
+        import_reg_and_inst!();
+        let temp_reg = self.reg_pool.alloc_temp();
+        self.write_inst(la {
+            rd: temp_reg,
+            label,
+        });
+    }
+
+    pub fn load_from_address(&mut self) {
+        import_reg_and_inst!();
+        let address_reg = self.reg_pool.take_reg();
+        let value_reg = self.reg_pool.alloc_temp();
+        self.write_inst(lw {
+            rd: value_reg,
+            imm12: 0,
+            rs: address_reg,
+        });
+    }
+
     pub fn binary_op(&mut self, op: BinaryOp) {
-        import!();
-        let rhs = self.reg_pool.take();
-        let lhs = self.reg_pool.take();
-        let res = self.reg_pool.alloc();
+        import_reg_and_inst!();
+        let rhs = self.reg_pool.take_reg();
+        let lhs = self.reg_pool.take_reg();
+        let res = self.reg_pool.alloc_temp();
         match op {
             BinaryOp::NotEq => {
                 self.write_inst(sub {
@@ -675,22 +918,36 @@ impl AsmGenContext {
     }
 
     pub fn ret(&mut self) {
-        import!();
-        let source = self.reg_pool.take();
+        import_reg_and_inst!();
+        let source = self.reg_pool.take_reg();
         self.write_inst(mv { rd: a0, rs: source });
-        self.epilogue_stack.last().unwrap().clone().finish(self);
+        self.epilogue_stack
+            .last_mut()
+            .unwrap()
+            .mark()
+            .clone()
+            .finish(self);
+    }
+
+    pub fn void_ret(&mut self) {
+        self.epilogue_stack
+            .last_mut()
+            .unwrap()
+            .mark()
+            .clone()
+            .finish(self);
     }
 
     pub fn jump(&mut self, bb: BasicBlock, program: &Program) {
-        import!();
+        import_reg_and_inst!();
         self.write_inst(j {
             label: self.get_bb_name(bb, program),
         });
     }
 
     pub fn if_jump(&mut self, true_bb: BasicBlock, false_bb: BasicBlock, program: &Program) {
-        import!();
-        let cond_reg = self.reg_pool.take();
+        import_reg_and_inst!();
+        let cond_reg = self.reg_pool.take_reg();
         self.write_inst(bnez {
             rs: cond_reg,
             label: self.get_bb_name(true_bb, program),
