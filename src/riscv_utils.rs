@@ -567,36 +567,13 @@ impl AsmGenContext {
     }
 
     pub fn prologue(&mut self, offset: usize, call_ra: bool) {
-        import_reg_and_inst!();
+        use Register::{ra, sp};
         let offset = offset as i32;
 
-        // if offset can't represent in imm12, we should use a temporary register.
-        if offset > 0 {
-            if (offset >> 12) != 0 {
-                self.write_inst(li {
-                    rd: t0,
-                    imm: -offset,
-                });
-                self.write_inst(add {
-                    rd: sp,
-                    rs1: sp,
-                    rs2: t0,
-                });
-            } else {
-                self.write_inst(addi {
-                    rd: sp,
-                    rs: sp,
-                    imm12: -offset,
-                });
-            }
-        }
+        self.add_imm(sp, -offset, sp);
 
         if call_ra {
-            self.write_inst(sw {
-                rs2: ra,
-                imm12: offset - 4,
-                rs1: sp,
-            });
+            self.save_word(ra, offset - 4, sp);
         }
 
         self.epilogue_stack.push(Epilogue {
@@ -638,16 +615,11 @@ impl AsmGenContext {
             });
         } else if !data.ty().is_unit() {
             let offset = self.get_inst_offset(val).unwrap() as i32;
-            self.write_inst(lw {
-                rd: reg,
-                imm12: offset,
-                rs: sp,
-            });
+            self.load_word(reg, offset, sp);
         }
     }
 
     pub fn load_to_register(&mut self, program: &Program, val: Value) {
-        // TODO: global load to register
         if val.is_global() {
             self.load_address(
                 program
@@ -666,35 +638,17 @@ impl AsmGenContext {
                     self.load_imm(int.value());
                 }
                 ValueKind::FuncArgRef(arg_ref) if arg_ref.index() < 8 => {
-                    // let idx = arg_ref.index();
-                    // if idx < 8 {
                     use Register::a0;
                     let reg = (a0 as u8 + arg_ref.index() as u8).try_into().unwrap();
                     self.alloc_para_reg(reg);
-                    // } else {
-                    //     let offset = self.get_inst_offset(val).unwrap() as i32;
-                    //     self.load_word(offset);
-                    // }
                 }
                 _ if !data.ty().is_unit() => {
                     let offset = self.get_inst_offset(val).unwrap() as i32;
-                    self.load_word(offset);
+                    self.load_word_sp(offset);
                 }
                 _ => (),
             }
         }
-    }
-
-    pub fn save_word_at_curr_inst(&mut self) {
-        import_reg_and_inst!();
-        let curr_inst = self.curr_inst.unwrap();
-        let offset = self.get_inst_offset(curr_inst).unwrap() as i32;
-        let source = self.reg_pool.take_reg();
-        self.write_inst(sw {
-            rs2: source,
-            imm12: offset,
-            rs1: sp,
-        });
     }
 
     pub fn curr_inst_mut(&mut self) -> &mut Option<Value> {
@@ -726,7 +680,7 @@ impl AsmGenContext {
         });
     }
 
-    pub fn add(&mut self) {
+    pub fn add_op(&mut self) {
         import_reg_and_inst!();
         let rhs = self.reg_pool.take_reg();
         let lhs = self.reg_pool.take_reg();
@@ -748,6 +702,11 @@ impl AsmGenContext {
             rs2: rhs,
         });
     }
+
+    pub fn add(&mut self, rd: Register, rs1: Register, rs2: Register) {
+        import_reg_and_inst!();
+        self.write_inst(add { rd, rs1, rs2 });
+    }
 }
 
 #[derive(Clone)]
@@ -765,34 +724,10 @@ impl Epilogue {
 
     pub fn finish(&self, ctx: &mut AsmGenContext) {
         import_reg_and_inst!();
-        // self.finished_once = true;
         if self.call_ra {
-            ctx.write_inst(lw {
-                rd: ra,
-                imm12: self.offset - 4,
-                rs: sp,
-            });
+            ctx.load_word(ra, self.offset - 4, sp);
         }
-        if self.offset > 0 {
-            if (self.offset >> 12) != 0 {
-                let temp_reg = ctx.reg_pool.alloc_temp();
-                ctx.write_inst(li {
-                    rd: temp_reg,
-                    imm: self.offset,
-                });
-                ctx.write_inst(add {
-                    rd: sp,
-                    rs1: sp,
-                    rs2: temp_reg,
-                });
-            } else {
-                ctx.write_inst(addi {
-                    rd: sp,
-                    rs: sp,
-                    imm12: self.offset,
-                });
-            }
-        }
+        ctx.add_imm(sp, self.offset, sp);
         ctx.write_inst(ret);
     }
 }
@@ -814,20 +749,58 @@ impl AsmGenContext {
         self.write_inst(li { rd: temp_reg, imm });
     }
 
+    pub fn save_word_at_curr_inst(&mut self) {
+        let curr_inst = self.curr_inst.unwrap();
+        let offset = self.get_inst_offset(curr_inst).unwrap() as i32;
+        self.save_word_with_offset(offset);
+    }
+
     pub fn save_word_at_inst(&mut self, val: Value) {
         let offset = self.get_inst_offset(val).unwrap() as i32;
         self.save_word_with_offset(offset);
     }
 
+    pub fn save_word(&mut self, rs2: Register, imm: i32, rs1: Register) {
+        import_reg_and_inst!();
+        if (-2048..2048).contains(&imm) {
+            self.write_inst(sw {
+                rs2,
+                imm12: imm,
+                rs1,
+            });
+        } else {
+            self.load_imm(imm);
+            let imm_reg = self.reg_pool.take_reg();
+            self.add(imm_reg, rs1, imm_reg);
+            self.write_inst(sw {
+                rs2,
+                imm12: 0,
+                rs1: imm_reg,
+            });
+        }
+    }
+
     #[inline]
     pub fn save_word_with_offset(&mut self, offset: i32) {
         import_reg_and_inst!();
-        let temp_reg = self.reg_pool.take_reg();
-        self.write_inst(sw {
-            rs2: temp_reg,
-            imm12: offset,
-            rs1: sp,
-        });
+        if (-2048..2048).contains(&offset) {
+            let temp_reg = self.reg_pool.take_reg();
+            self.write_inst(sw {
+                rs2: temp_reg,
+                imm12: offset,
+                rs1: sp,
+            });
+        } else {
+            self.load_imm(offset);
+            self.add_sp();
+            let add_temp = self.reg_pool.take_reg();
+            let temp_reg = self.reg_pool.take_reg();
+            self.write_inst(sw {
+                rs2: temp_reg,
+                imm12: 0,
+                rs1: add_temp,
+            });
+        }
     }
 
     #[inline]
@@ -842,15 +815,46 @@ impl AsmGenContext {
         });
     }
 
-    #[inline]
-    pub fn load_word(&mut self, offset: i32) {
+    pub fn load_word(&mut self, rd: Register, offset: i32, rs: Register) {
         import_reg_and_inst!();
+        if (-2048..2048).contains(&offset) {
+            self.write_inst(lw {
+                rd,
+                imm12: offset,
+                rs,
+            });
+        } else {
+            self.load_imm(offset);
+            self.add_sp();
+            let add_temp = self.reg_pool.take_reg();
+            self.write_inst(lw {
+                rd,
+                imm12: 0,
+                rs: add_temp,
+            });
+        }
+    }
+
+    pub fn add_imm(&mut self, rd: Register, imm: i32, rs: Register) {
+        import_reg_and_inst!();
+        if (-2048..2048).contains(&imm) {
+            self.write_inst(addi { rd, rs, imm12: imm })
+        } else {
+            self.load_imm(imm);
+            let imm_reg = self.reg_pool.take_reg();
+            self.write_inst(add {
+                rd,
+                rs1: rs,
+                rs2: imm_reg,
+            });
+        }
+    }
+
+    #[inline]
+    pub fn load_word_sp(&mut self, offset: i32) {
+        use Register::sp;
         let temp_reg = self.reg_pool.alloc_temp();
-        self.write_inst(lw {
-            rd: temp_reg,
-            imm12: offset,
-            rs: sp,
-        });
+        self.load_word(temp_reg, offset, sp);
     }
 
     pub fn load_address(&mut self, label: String) {

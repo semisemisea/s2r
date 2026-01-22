@@ -126,6 +126,32 @@ impl GenerateAsm for Value {
 /// ```
 impl GenerateAsm for values::GetPtr {
     fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
+        let global_flag = self.src().is_global();
+        // element type size
+        let pointee_size = if global_flag {
+            ptr_size(program.borrow_value(self.src()).ty())
+        } else {
+            ptr_size(ctx.curr_func_data(program).dfg().value(self.src()).ty())
+        };
+        // load index to register
+        ctx.load_to_register(program, self.index());
+        // load element type size to register
+        ctx.load_imm(pointee_size as _);
+        // do multipication
+        ctx.multiply();
+
+        // get the base address of array
+        if global_flag {
+            ctx.load_address(get_glob_var_name(self.src(), program));
+            // ctx.load_from_address();
+            ctx.add_op();
+        } else {
+            let pre_drifted_address = ctx.get_inst_offset(self.src()).unwrap();
+            ctx.load_word_sp(pre_drifted_address as _);
+            ctx.add_op()
+        }
+
+        ctx.save_word_at_curr_inst();
         Ok(())
     }
 }
@@ -162,17 +188,17 @@ impl GenerateAsm for values::GetElemPtr {
         // get the base address of array
         if global_flag {
             ctx.load_address(get_glob_var_name(self.src(), program));
-            ctx.load_from_address();
-            ctx.add();
+            // ctx.load_from_address();
+            ctx.add_op();
         } else if ptr_flag {
             let pre_drifted_address = ctx.get_inst_offset(self.src()).unwrap();
-            ctx.load_word(pre_drifted_address as _);
-            ctx.add()
+            ctx.load_word_sp(pre_drifted_address as _);
+            ctx.add_op()
         } else {
             let rel_base_address = ctx.get_inst_offset(self.src()).unwrap();
             // add to the base_address
             ctx.load_imm(rel_base_address as _);
-            ctx.add();
+            ctx.add_op();
             // We are calculating relative offset. Add sp to make it absolute
             ctx.add_sp();
         }
@@ -328,13 +354,24 @@ impl GenerateAsm for values::Binary {
 /// Get 1 register
 impl GenerateAsm for values::Load {
     fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()> {
-        if self.src().is_global() {
+        let global_flag = self.src().is_global();
+        let ptr_flag = if global_flag {
+            false
+        } else {
+            is_ptr(self.src(), ctx.curr_func_data(program))
+        };
+        if global_flag {
             ctx.load_address(get_glob_var_name(self.src(), program));
+            ctx.load_from_address();
+            ctx.save_word_at_curr_inst();
+        } else if ptr_flag {
+            let offset = ctx.get_inst_offset(self.src()).unwrap() as i32;
+            ctx.load_word_sp(offset);
             ctx.load_from_address();
             ctx.save_word_at_curr_inst();
         } else {
             let offset = ctx.get_inst_offset(self.src()).unwrap() as i32;
-            ctx.load_word(offset);
+            ctx.load_word_sp(offset);
             ctx.save_word_at_curr_inst();
         }
         Ok(())
@@ -364,13 +401,13 @@ impl GenerateAsm for values::Store {
             ctx.save_word_at_address();
         } else {
             match ctx.curr_func_data(program).dfg().value(self.dest()).kind() {
-                ValueKind::GetElemPtr(_get_elem_ptr) => {
+                ValueKind::GetElemPtr(..) | ValueKind::GetPtr(..) => {
                     ctx.load_to_register(program, self.dest());
                     ctx.load_to_register(program, self.value());
                     ctx.save_word_at_address();
                 }
                 normal_kind => {
-                    eprintln!("{normal_kind:?}");
+                    // eprintln!("normal_kind: {normal_kind:?}");
                     // store the value where it's located.
                     ctx.load_to_register(program, self.value());
                     ctx.save_word_at_inst(self.dest());
@@ -419,15 +456,23 @@ fn get_glob_var_name(var: Value, program: &Program) -> String {
 //     }
 // }
 
+fn dereference(ty: &koopa::ir::Type) -> &koopa::ir::Type {
+    use koopa::ir::TypeKind::*;
+    if let Pointer(point_to) = ty.kind() {
+        dereference(point_to)
+    } else {
+        ty
+    }
+}
+
 fn ptr_elem_size(ty: &koopa::ir::Type) -> usize {
     use koopa::ir::TypeKind::*;
-    let Pointer(point_to) = ty.kind() else {
-        unreachable!();
-    };
-    let Array(elem_ty, _len) = point_to.kind() else {
-        unreachable!();
-    };
-    elem_ty.size()
+    let point_to = dereference(ty);
+    match point_to.kind() {
+        Array(elem_ty, _len) => elem_ty.size(),
+        Int32 => 4,
+        _fuck => unreachable!("{point_to:?}"),
+    }
 }
 
 fn ptr_size(ty: &koopa::ir::Type) -> usize {
