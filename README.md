@@ -9,8 +9,8 @@ A toy but my first compiler, implemented in Rust, which convert SysY programming
 - Block and scope - ✅
 - if/else - ✅
 - while/for - ✅
-- Function and global variables - (IR finished.)
-- Arrays - (IR finished.)
+- Function and global variables - ✅
+- Arrays - ✅
 - Optimization
 
 ## Unimplemented features
