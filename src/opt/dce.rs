@@ -6,7 +6,11 @@ use koopa::{
     opt::{FunctionPass, ModulePass},
 };
 
+use crate::opt::utils::{IDAllocator, build_cfg};
+
 pub struct DeadCodeElimination;
+
+pub struct UnreachableBasicBlock;
 
 fn use_the(this: &ValueData) -> Vec<Value> {
     use koopa::ir::ValueKind::*;
@@ -27,55 +31,72 @@ fn use_the(this: &ValueData) -> Vec<Value> {
     }
 }
 
+impl FunctionPass for UnreachableBasicBlock {
+    fn run_on(&mut self, func: Function, data: &mut FunctionData) {
+        let mut id_allocator = IDAllocator::new();
+        let (_, prece) = build_cfg(data, &mut id_allocator);
+
+        let unreachable_bb = (1..id_allocator.cnt())
+            // in-degree is zero.
+            .filter(|id| prece[id].is_empty())
+            .collect::<Vec<_>>();
+
+        for id in unreachable_bb {
+            eprintln!("delete basic block: {:?}", id_allocator.search_id(id));
+            data.dfg_mut().remove_bb(id_allocator.search_id(id));
+        }
+    }
+}
+
 impl ModulePass for DeadCodeElimination {
     fn run_on(&mut self, program: &mut Program) {
-        for (_func, data) in program.funcs_mut().iter_mut() {
-            let mut fontier = VecDeque::new();
-            let mut marker = HashSet::new();
-            for (&_bb, node) in data.layout().bbs().iter() {
-                let val = node.insts().back_key().unwrap();
-                // TODO: Assert that end instruction is `br`, `ret` or `jump`
-                fontier.push_back(*val);
-                marker.insert(*val);
-            }
-            while !fontier.is_empty() {
-                let inst = fontier.pop_front().unwrap();
-                let val_data = data.dfg_mut().value(inst);
-                for next in use_the(val_data).iter() {
-                    if marker.contains(next) {
-                        continue;
-                    }
-                    let next_data = data.dfg_mut().value(*next);
-                    let used_by = next_data.used_by();
-                    if used_by.is_subset(&marker) {
-                        fontier.push_back(*next);
-                        marker.insert(*next);
-                    }
-                }
-            }
-            let mut cursor_bb = data.layout_mut().bbs_mut().cursor_front_mut();
-            while !cursor_bb.is_null() {
-                let bb_node = cursor_bb.node_mut().unwrap();
-                // for bb_node in data.layout().bbs().nodes() {
-                let mut cursor_val = bb_node.insts_mut().cursor_front_mut();
-                while !cursor_val.is_null() {
-                    if !marker.contains(cursor_val.key().unwrap()) {
-                        cursor_val.remove_current();
-                    }
-                    cursor_val.move_next();
-                }
-                cursor_bb.move_next();
-            }
-            // let mut cursor = data.layout().bbs().cursor_front_mut();
-            // while !cursor.is_null() {
-            //     let node = cursor.node_mut().unwrap();
-            //     for (&val, node) in node.insts_mut().iter() {
-            //         if !marker.contains(&val) {
-            //             data.dfg_mut().remove_value(val);
-            //         }
-            //     }
-            //     cursor.move_next();
-            // }
-        }
+        // for (_func, data) in program.funcs_mut().iter_mut() {
+        //     let mut fontier = VecDeque::new();
+        //     let mut marker = HashSet::new();
+        //     for (&_bb, node) in data.layout().bbs().iter() {
+        //         let val = node.insts().back_key().unwrap();
+        //         // TODO: Assert that end instruction is `br`, `ret` or `jump`
+        //         fontier.push_back(*val);
+        //         marker.insert(*val);
+        //     }
+        //     while !fontier.is_empty() {
+        //         let inst = fontier.pop_front().unwrap();
+        //         let val_data = data.dfg_mut().value(inst);
+        //         for next in use_the(val_data).iter() {
+        //             if marker.contains(next) {
+        //                 continue;
+        //             }
+        //             let next_data = data.dfg_mut().value(*next);
+        //             let used_by = next_data.used_by();
+        //             if used_by.is_subset(&marker) {
+        //                 fontier.push_back(*next);
+        //                 marker.insert(*next);
+        //             }
+        //         }
+        //     }
+        //     let mut cursor_bb = data.layout_mut().bbs_mut().cursor_front_mut();
+        //     while !cursor_bb.is_null() {
+        //         let bb_node = cursor_bb.node_mut().unwrap();
+        //         // for bb_node in data.layout().bbs().nodes() {
+        //         let mut cursor_val = bb_node.insts_mut().cursor_front_mut();
+        //         while !cursor_val.is_null() {
+        //             if !marker.contains(cursor_val.key().unwrap()) {
+        //                 cursor_val.remove_current();
+        //             }
+        //             cursor_val.move_next();
+        //         }
+        //         cursor_bb.move_next();
+        //     }
+        //     let mut cursor = data.layout().bbs().cursor_front_mut();
+        //     while !cursor.is_null() {
+        //         let node = cursor.node_mut().unwrap();
+        //         for (&val, node) in node.insts_mut().iter() {
+        //             if !marker.contains(&val) {
+        //                 data.dfg_mut().remove_value(val);
+        //             }
+        //         }
+        //         cursor.move_next();
+        //     }
+        // }
     }
 }
