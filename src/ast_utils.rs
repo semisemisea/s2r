@@ -678,6 +678,12 @@ impl AstGenContext {
                 .insts_mut()
                 .push_key_back(val)
                 .unwrap();
+        } else {
+            // eprintln!(
+            //     "remove val: {val:?} {:?}",
+            //     self.curr_func_data().dfg().value(val).kind()
+            // );
+            // self.curr_func_data_mut().dfg_mut().remove_value(val);
         }
     }
 
@@ -846,8 +852,29 @@ impl AstGenContext {
         }
     }
 
+    #[inline]
+    fn global_val_as_i32_val(&mut self, val: Value) -> Value {
+        assert!(val.is_global());
+        let int = match self.program.borrow_value(val).kind() {
+            ValueKind::Integer(int) => int.value(),
+            _ => unreachable!(),
+        };
+        self.curr_func_data_mut().dfg_mut().new_value().integer(int)
+    }
+
+    pub fn as_i32_val(&mut self, val: Value) -> Value {
+        if val.is_global() {
+            self.global_val_as_i32_val(val)
+        } else {
+            val
+        }
+    }
+
     pub fn pop_i32(&mut self) -> anyhow::Result<i32> {
         let val = self.pop_val().unwrap();
+        if self.as_i32(val).is_none() {
+            panic!();
+        }
         self.as_i32(val).context(format!("Not a integer {:?}", val))
     }
 

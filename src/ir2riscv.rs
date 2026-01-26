@@ -406,8 +406,7 @@ impl GenerateAsm for values::Store {
                     ctx.load_to_register(program, self.value());
                     ctx.save_word_at_address();
                 }
-                normal_kind => {
-                    // eprintln!("normal_kind: {normal_kind:?}");
+                _ => {
                     // store the value where it's located.
                     ctx.load_to_register(program, self.value());
                     ctx.save_word_at_inst(self.dest());

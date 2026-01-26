@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::opt::utils::{self, BId, CFGGraph, IDAllocator, VId};
 
+const FUNC_ARG_OPT_ENABLE: bool = true;
+
 use koopa::{
     ir::{
         BasicBlock, FunctionData, Value, ValueKind,
@@ -47,8 +49,11 @@ impl FunctionPass for SSATransform {
         // Discretization. Assign each unique basic block with natural number 0..n
         let mut bb_id = IDAllocator::new();
 
+        eprintln!("showing");
+        eprintln!("finished");
         // get graph and reverse graph
         let (graph, prece) = utils::build_cfg(data, &mut bb_id);
+        eprintln!("graph: {graph:?}");
 
         // entry_bb must get 0 for id
         assert!(bb_id.get_id(data.layout().entry_bb().unwrap()) == 0);
@@ -56,24 +61,31 @@ impl FunctionPass for SSATransform {
         let rpo_path = rpo_path(&graph);
         // start from entry_bb so first element of RPO is zero
         assert!(rpo_path[0] == 0);
+        eprintln!("rpo_path: {rpo_path:?}");
 
         // get immediate dominator of each block
         // dominance is a partial order.
         // immediate dominance means partial order coverage
         let idom_map = idom(&prece, &rpo_path);
+        eprintln!("idom_map: {idom_map:?}");
 
         // for dominance, its hasse diagram is a tree
-        let donimnace_tree = build_dominance_tree(&idom_map);
+        let donimnace_tree = build_dominance_tree(&idom_map, rpo_path.len());
+        eprintln!("dominance_tree: {donimnace_tree:?}");
 
         // then we can do frontier analysis
         let dom_frontier = dominance_analysis(&bb_id, &prece, &idom_map);
+        eprintln!("dominance_frontier: {dom_frontier:?}");
 
         // find out where are varaibles defined.
         let mut val_id = IDAllocator::new();
         let val_usage = variable_analysis(&mut val_id, &mut bb_id, data);
+        eprintln!("val_usage: {val_usage:?}");
 
         // variable(vid) is insert as basic block(bbid) at index(usize)
         let mut insert_table = vec![vec![]; bb_id.cnt()];
+
+        let mut worked = vec![HashSet::new(); bb_id.cnt()];
 
         for (vid, frontiers) in val_usage.iter().enumerate().flat_map(|(vid, def_bbs)| {
             def_bbs
@@ -81,7 +93,7 @@ impl FunctionPass for SSATransform {
                 .filter_map(|def_bb| dom_frontier.get(def_bb))
                 .map(move |frontier| (vid, frontier))
         }) {
-            let mut worked = frontiers.clone();
+            // let mut worked = frontiers.clone();
             let mut work_queue = VecDeque::with_capacity(frontiers.len());
             for &front in frontiers.iter() {
                 work_queue.push_back(front);
@@ -91,12 +103,17 @@ impl FunctionPass for SSATransform {
 
             while !work_queue.is_empty() {
                 let front = work_queue.pop_front().unwrap();
+                if worked[front].contains(&vid) {
+                    continue;
+                }
+                worked[front].insert(vid);
                 // eprintln!("visited {front}");
                 let bb = bb_id.search_id(front);
                 let index = data.dfg().bb(bb).params().len();
 
                 let var_ty = utils::alloc_ty(val_id.search_id(vid as _), data).clone();
 
+                // TODO: Do it in another way.
                 let arg = BlockArgRef::new_data(index, var_ty);
                 insert_table[front].push((vid, index));
                 let new_block_arg_ref = data.dfg_mut().new_value().insert_value(arg);
@@ -109,10 +126,11 @@ impl FunctionPass for SSATransform {
                     .push(new_block_arg_ref);
 
                 if let Some(sub_frontiers) = dom_frontier.get(&front) {
-                    for sub_front in sub_frontiers.iter() {
-                        if !worked.contains(sub_front) {
-                            worked.insert(*sub_front);
-                            work_queue.push_back(*sub_front);
+                    for &sub_front in sub_frontiers.iter() {
+                        if !worked[sub_front].contains(&vid) {
+                            // if !worked.contains(sub_front) {
+                            //     worked.insert(*sub_front);
+                            work_queue.push_back(sub_front);
                         } else {
                             eprintln!("detected loop and correctly stop.");
                             // eprintln!("sub front {sub_front}");
@@ -137,26 +155,46 @@ impl FunctionPass for SSATransform {
             &mut remove_list,
         );
 
+        // remove_list.into_iter().for_each(|(val, bb)| {
+        //     dfs_remove(val, data, bb);
+        // });
         remove_list.into_iter().rev().for_each(|(val, bb)| {
             let vd = data.dfg().value(val);
-            eprintln!("delete check {:?}, {:?}", vd.kind(), vd.used_by());
+            eprintln!("delete check {:?} {:?}, {:?}", val, vd.kind(), vd.used_by());
+            let used_by = vd.used_by().iter().copied().collect::<Vec<_>>();
+            for val in used_by.into_iter().rev() {
+                let rmd = data.dfg().value(val);
+                eprintln!("{:?}", val);
+                eprintln!("{:?}", rmd.kind());
+                eprintln!("{:?}", rmd.used_by());
+                data.dfg_mut().remove_value(val);
+            }
             data.layout_mut().bb_mut(bb).insts_mut().remove(&val);
             data.dfg_mut().remove_value(val);
         });
 
         eprintln!();
-        eprintln!("showing");
-        eprintln!("graph: {graph:?}");
-        eprintln!("rpo_path: {rpo_path:?}");
-        eprintln!("idom_map: {idom_map:?}");
-        eprintln!("dominance_frontier: {dom_frontier:?}");
-        eprintln!("val_usage: {val_usage:?}");
-        eprintln!("dominance_tree: {donimnace_tree:?}");
-        eprintln!("finished");
         eprintln!("----------------------------------");
         eprintln!();
     }
 }
+
+// fn dfs_remove(val: Value, data: &mut FunctionData, bb: BasicBlock) {
+//     let mut remove_list = Vec::new();
+//     _dfs_remove(val, data, &mut remove_list);
+//     for val in remove_list.into_iter().rev() {
+//         data.layout_mut().bb_mut(bb).insts_mut().remove(&val);
+//         data.dfg_mut().remove_value(val);
+//     }
+// }
+//
+// fn _dfs_remove(val: Value, data: &FunctionData, remove_list: &mut Vec<Value>) {
+//     let vd = data.dfg().value(val);
+//     remove_list.push(val);
+//     for &child in vd.used_by().iter() {
+//         _dfs_remove(child, data, remove_list);
+//     }
+// }
 
 #[allow(clippy::too_many_arguments)]
 fn dfs(
@@ -189,38 +227,44 @@ fn dfs(
             // Step 2.1: Straight delete `alloc`.
             // `alloc` can only be deleted when all `load` and `store` is deleted.
             ValueKind::Alloc(..) => {
-                remove_list.push((val, bb));
+                if val_id.get_id_safe(val).is_some() {
+                    remove_list.push((val, bb));
+                }
             }
             // Step 2.2: Update the value in stack with corresponding variable if we met `store`.
             ValueKind::Store(store) => {
-                let dest_id = val_id.get_id(store.dest());
-                st[dest_id].push(store.value());
-                history.push(dest_id);
+                if let Some(&dest_id) = val_id.get_id_safe(store.dest()) {
+                    st[dest_id].push(store.value());
+                    history.push(dest_id);
 
-                eprintln!("check used_by: {:?}", val_data.used_by());
-                remove_list.push((val, bb));
+                    remove_list.push((val, bb));
+                }
             }
             ValueKind::Load(load) => {
-                let rep_with = *st[val_id.get_id(load.src())].last().unwrap();
-                let list = val_data.used_by().iter().copied().collect::<Vec<_>>();
-                for used_by in list {
-                    visit_and_replace(data, used_by, val, rep_with);
+                if let Some(&load_id) = val_id.get_id_safe(load.src()) {
+                    let rep_with = *st[load_id].last().unwrap();
+                    let list = val_data.used_by().iter().copied().collect::<Vec<_>>();
+                    for used_by in list {
+                        visit_and_replace(data, used_by, val, rep_with);
+                    }
+                    remove_list.push((val, bb));
                 }
-                remove_list.push((val, bb));
             }
             ValueKind::Jump(jump) => {
                 let target = jump.target();
                 let target_id = bb_id.get_id(target);
-                let args = jump
-                    .args()
-                    .iter()
-                    .chain(
-                        insert_table[target_id]
-                            .iter()
-                            .map(|&(vid, _)| st[vid].last().unwrap()),
-                    )
-                    .copied()
-                    .collect();
+                let mut args = jump.args().to_vec();
+                for (i, &(vid, _)) in (args.len()..).zip(insert_table[target_id].iter()) {
+                    let item = match st[vid].last() {
+                        Some(&val) => val,
+                        None => {
+                            let v = data.dfg().bb(target).params()[i];
+                            let ty = data.dfg().value(v).ty().clone();
+                            data.dfg_mut().new_value().undef(ty)
+                        }
+                    };
+                    args.push(item);
+                }
                 data.dfg_mut()
                     .replace_value_with(val)
                     .jump_with_args(target, args);
@@ -229,28 +273,32 @@ fn dfs(
                 let cond = branch.cond();
                 let true_bb = branch.true_bb();
                 let true_bb_id = bb_id.get_id(true_bb);
-                let true_args = branch
-                    .true_args()
-                    .iter()
-                    .chain(
-                        insert_table[true_bb_id]
-                            .iter()
-                            .map(|&(vid, _)| st[vid].last().unwrap()),
-                    )
-                    .copied()
-                    .collect();
                 let false_bb = branch.false_bb();
                 let false_bb_id = bb_id.get_id(false_bb);
-                let false_args = branch
-                    .false_args()
-                    .iter()
-                    .chain(
-                        insert_table[false_bb_id]
-                            .iter()
-                            .map(|&(vid, _)| st[vid].last().unwrap()),
-                    )
-                    .copied()
-                    .collect();
+                let mut false_args = branch.false_args().to_vec();
+                let mut true_args = branch.true_args().to_vec();
+                for (i, &(vid, _)) in (false_args.len()..).zip(insert_table[false_bb_id].iter()) {
+                    let item = match st[vid].last() {
+                        Some(&val) => val,
+                        None => {
+                            let v = data.dfg().bb(false_bb).params()[i];
+                            let ty = data.dfg().value(v).ty().clone();
+                            data.dfg_mut().new_value().undef(ty)
+                        }
+                    };
+                    false_args.push(item);
+                }
+                for (i, &(vid, _)) in (true_args.len()..).zip(insert_table[true_bb_id].iter()) {
+                    let item = match st[vid].last() {
+                        Some(&val) => val,
+                        None => {
+                            let v = data.dfg().bb(true_bb).params()[i];
+                            let ty = data.dfg().value(v).ty().clone();
+                            data.dfg_mut().new_value().undef(ty)
+                        }
+                    };
+                    true_args.push(item);
+                }
                 data.dfg_mut()
                     .replace_value_with(val)
                     .branch_with_args(cond, true_bb, false_bb, true_args, false_args);
@@ -293,7 +341,7 @@ fn visit_and_replace(data: &mut FunctionData, used_by: Value, rep: Value, rep_wi
         ValueKind::Load(load) => todo!(),
 
         ValueKind::Store(store) => {
-            if data.dfg().value_eq(store.value(), rep) {
+            if store.value() == rep {
                 let dest = store.dest();
                 data.dfg_mut()
                     .replace_value_with(used_by)
@@ -301,7 +349,7 @@ fn visit_and_replace(data: &mut FunctionData, used_by: Value, rep: Value, rep_wi
             }
         }
         ValueKind::GetPtr(get_ptr) => {
-            if data.dfg().value_eq(get_ptr.index(), rep) {
+            if get_ptr.index() == rep {
                 let src = get_ptr.src();
                 data.dfg_mut()
                     .replace_value_with(used_by)
@@ -309,20 +357,20 @@ fn visit_and_replace(data: &mut FunctionData, used_by: Value, rep: Value, rep_wi
             }
         }
         ValueKind::GetElemPtr(get_elem_ptr) => {
-            if data.dfg().value_eq(get_elem_ptr.index(), rep) {
+            if get_elem_ptr.index() == rep {
                 let src = get_elem_ptr.src();
                 data.dfg_mut()
                     .replace_value_with(used_by)
-                    .get_ptr(src, rep_with);
+                    .get_elem_ptr(src, rep_with);
             }
         }
         ValueKind::Binary(binary) => {
-            let lhs = if data.dfg().value_eq(binary.lhs(), rep) {
+            let lhs = if binary.lhs() == rep {
                 rep_with
             } else {
                 binary.lhs()
             };
-            let rhs = if data.dfg().value_eq(binary.rhs(), rep) {
+            let rhs = if binary.rhs() == rep {
                 rep_with
             } else {
                 binary.rhs()
@@ -336,24 +384,12 @@ fn visit_and_replace(data: &mut FunctionData, used_by: Value, rep: Value, rep_wi
             let true_args = branch
                 .true_args()
                 .iter()
-                .map(|&val| {
-                    if data.dfg().value_eq(val, rep) {
-                        rep_with
-                    } else {
-                        val
-                    }
-                })
+                .map(|&val| if val == rep { rep_with } else { val })
                 .collect();
             let false_args = branch
                 .false_args()
                 .iter()
-                .map(|&val| {
-                    if data.dfg().value_eq(val, rep) {
-                        rep_with
-                    } else {
-                        val
-                    }
-                })
+                .map(|&val| if val == rep { rep_with } else { val })
                 .collect();
             let (cond, true_bb, false_bb) = (branch.cond(), branch.true_bb(), branch.false_bb());
             data.dfg_mut()
@@ -364,13 +400,7 @@ fn visit_and_replace(data: &mut FunctionData, used_by: Value, rep: Value, rep_wi
             let args = jump
                 .args()
                 .iter()
-                .map(|&val| {
-                    if data.dfg().value_eq(val, rep) {
-                        rep_with
-                    } else {
-                        val
-                    }
-                })
+                .map(|&val| if val == rep { rep_with } else { val })
                 .collect();
             let target = jump.target();
             data.dfg_mut()
@@ -381,13 +411,7 @@ fn visit_and_replace(data: &mut FunctionData, used_by: Value, rep: Value, rep_wi
             let args = call
                 .args()
                 .iter()
-                .map(|&val| {
-                    if data.dfg().value_eq(val, rep) {
-                        rep_with
-                    } else {
-                        val
-                    }
-                })
+                .map(|&val| if val == rep { rep_with } else { val })
                 .collect();
             let callee = call.callee();
             data.dfg_mut()
@@ -396,7 +420,7 @@ fn visit_and_replace(data: &mut FunctionData, used_by: Value, rep: Value, rep_wi
         }
         ValueKind::Return(ret) => {
             if let Some(ret_val) = ret.value()
-                && data.dfg().value_eq(ret_val, rep)
+                && ret_val == rep
             {
                 data.dfg_mut()
                     .replace_value_with(used_by)
@@ -411,6 +435,12 @@ pub fn variable_analysis(
     bb_id: &mut IDAllocator<BasicBlock, BId>,
     data: &FunctionData,
 ) -> ValUsage {
+    let mut skip_func_para = if FUNC_ARG_OPT_ENABLE {
+        data.params().len()
+    } else {
+        0
+    };
+    eprintln!("skip: {skip_func_para}");
     let mut val_usage = ValUsage::new();
 
     // use iterator to get rid of nested for-loop
@@ -427,15 +457,21 @@ pub fn variable_analysis(
     {
         match val_kind {
             ValueKind::Alloc(..) => {
-                // TODO: ssa do nothing when allocate a array.
-                let ty = utils::alloc_ty(val, data);
-                val_id.check_or_alloca(val);
-                val_usage.push(Vec::new());
+                if skip_func_para > 0 {
+                    skip_func_para -= 1;
+                } else {
+                    let ty = utils::alloc_ty(val, data);
+                    if ty.is_i32() {
+                        val_id.check_or_alloca(val);
+                        val_usage.push(Vec::new());
+                    }
+                }
             }
             ValueKind::Store(store) => {
-                let vid = val_id.get_id(store.dest());
-                let bbid = bb_id.get_id(bb);
-                val_usage[vid].push(bbid);
+                if let Some(&vid) = val_id.get_id_safe(store.dest()) {
+                    let bbid = bb_id.get_id(bb);
+                    val_usage[vid].push(bbid);
+                }
             }
             _ => {}
         }
@@ -512,8 +548,8 @@ fn idom(prede: &CFGGraph, rpo: &[BId]) -> IDomMap {
     map
 }
 
-fn build_dominance_tree(idom_map: &IDomMap) -> DomTree {
-    let mut ret = vec![vec![]; idom_map.len()];
+fn build_dominance_tree(idom_map: &IDomMap, rpo_len: usize) -> DomTree {
+    let mut ret = vec![vec![]; rpo_len];
     // remember that idom_map we make `idom_map[0] = 0`
     // that is not allowed in a tree (no loop or ring)
     for (vid, &pa) in idom_map.iter().enumerate().skip(1) {

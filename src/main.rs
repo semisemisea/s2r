@@ -1,3 +1,4 @@
+use koopa::opt::{Pass, PassManager};
 use lalrpop_util::lalrpop_mod;
 
 mod ast;
@@ -23,8 +24,8 @@ fn main() -> std::io::Result<()> {
     let output = args.next().unwrap();
 
     let input = std::fs::read_to_string(input)?;
-    #[cfg(debug_assertions)]
-    println!("{input}");
+    // #[cfg(debug_assertions)]
+    // println!("{input}");
 
     let ast = sysy::CompUnitsParser::new().parse(&input).unwrap();
     let mut ir_ctx = AstGenContext::new();
@@ -32,17 +33,26 @@ fn main() -> std::io::Result<()> {
         eprintln!("Encounter error: {e}");
         std::process::exit(1);
     };
-    // let mut pass_manager = PassManager::new();
-    // let dce = opt::dce::DeadCodeElimination;
-    // pass_manager.register(Pass::Module(Box::new(dce)));
-    // pass_manager.run_passes(&mut ir_ctx.program);
+
+    let mut pass_manager = PassManager::new();
+
+    // let rdv = opt::dce::RemoveDiscardedValue;
+    // pass_manager.register(Pass::Module(Box::new(rdv)));
+
+    let ubb = opt::dce::UnreachableBasicBlock;
+    pass_manager.register(Pass::Function(Box::new(ubb)));
+
+    let ssa = opt::ssa::SSATransform;
+    pass_manager.register(Pass::Function(Box::new(ssa)));
+
+    pass_manager.run_passes(&mut ir_ctx.program);
     match mode.as_str() {
         "-koopa" => {
             let mut g = koopa::back::KoopaGenerator::new(Vec::new());
             g.generate_on(&ir_ctx.end()).unwrap();
             let ir_text = std::str::from_utf8(&g.writer()).unwrap().to_string();
-            #[cfg(debug_assertions)]
-            eprintln!("{ir_text}");
+            // #[cfg(debug_assertions)]
+            // eprintln!("{ir_text}");
             std::fs::write(output, ir_text)?;
         }
         "-riscv" => {

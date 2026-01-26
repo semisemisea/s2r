@@ -608,14 +608,28 @@ impl AsmGenContext {
     pub fn load_to_para_register(&mut self, program: &Program, val: Value, reg: Register) {
         import_reg_and_inst!();
         let data = self.curr_func_data(program).dfg().value(val);
-        if let ValueKind::Integer(int) = data.kind() {
-            self.write_inst(li {
-                rd: reg,
-                imm: int.value(),
-            });
-        } else if !data.ty().is_unit() {
-            let offset = self.get_inst_offset(val).unwrap() as i32;
-            self.load_word(reg, offset, sp);
+        match data.kind() {
+            ValueKind::Integer(int) => {
+                self.write_inst(li {
+                    rd: reg,
+                    imm: int.value(),
+                });
+            }
+            ValueKind::FuncArgRef(arg_ref) if arg_ref.index() < 8 => {
+                use Register::a0;
+                let reg = (a0 as u8 + arg_ref.index() as u8).try_into().unwrap();
+                self.alloc_para_reg(reg);
+            }
+            _ if !data.ty().is_unit() => {
+                eprintln!(
+                    "{:?} {:?}",
+                    val,
+                    self.curr_func_data(program).dfg().value(val).kind()
+                );
+                let offset = self.get_inst_offset(val).unwrap() as i32;
+                self.load_word(reg, offset, sp);
+            }
+            _ => (),
         }
     }
 
@@ -642,7 +656,15 @@ impl AsmGenContext {
                     let reg = (a0 as u8 + arg_ref.index() as u8).try_into().unwrap();
                     self.alloc_para_reg(reg);
                 }
+                ValueKind::Undef(..) => {
+                    self.undef_take_temp();
+                }
                 _ if !data.ty().is_unit() => {
+                    // eprintln!(
+                    //     "{:?} {:?}",
+                    //     val,
+                    //     self.curr_func_data(program).dfg().value(val).kind()
+                    // );
                     let offset = self.get_inst_offset(val).unwrap() as i32;
                     self.load_word_sp(offset);
                 }
@@ -742,6 +764,11 @@ impl Drop for Epilogue {
 
 //Specific instruction implementation
 impl AsmGenContext {
+    // undef should not have any memory moves when being efficiency.
+    pub fn undef_take_temp(&mut self) {
+        self.reg_pool.alloc_temp();
+    }
+
     #[inline]
     pub fn load_imm(&mut self, imm: i32) {
         import_reg_and_inst!();

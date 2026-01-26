@@ -93,6 +93,9 @@ impl ToKoopaIR for item::FuncDef {
 impl ToKoopaIR for item::Block {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         ctx.add_scope();
         self.block_items
             .iter()
@@ -109,6 +112,9 @@ impl ToKoopaIR for item::Block {
 impl ToKoopaIR for item::BlockItem {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::BlockItem::Decl(decl) => decl.convert(ctx),
             item::BlockItem::Stmt(stmt) => stmt.convert(ctx),
@@ -123,6 +129,9 @@ impl ToKoopaIR for item::BlockItem {
 impl ToKoopaIR for item::Decl {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::Decl::ConstDecl(c_decl) => c_decl.convert(ctx),
             item::Decl::VarDecl(v_decl) => v_decl.convert(ctx),
@@ -141,6 +150,9 @@ impl ToKoopaIR for item::Decl {
 impl ToKoopaIR for item::ConstDecl {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         ensure!(
             self.btype.is_i32(),
             "Unknown type for constant declaration."
@@ -166,6 +178,9 @@ impl ToKoopaIR for item::ConstDecl {
 
 impl ToKoopaIR for item::ConstDef {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         let ty = ctx.curr_def_type().unwrap();
         // not an array
         if self.arr_dim.is_empty() {
@@ -176,9 +191,9 @@ impl ToKoopaIR for item::ConstDef {
             self.const_init_val.convert(ctx)?;
             let init_val = ctx.pop_val().unwrap();
             // Not a constant val
-            if !ctx.curr_func_data().dfg().value(init_val).kind().is_const() {
-                bail!("Value can't be calculated at compile time.");
-            };
+            // if !ctx.curr_func_data().dfg().value(init_val).kind().is_const() {
+            //     bail!("Value can't be calculated at compile time.");
+            // };
             ctx.insert_const(self.ident.clone(), init_val)
         }
         // is an array
@@ -305,6 +320,9 @@ impl ToKoopaIR for item::ConstDef {
 impl ToKoopaIR for item::ConstInitVal {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::ConstInitVal::Normal(const_exp) => const_exp.convert(ctx),
             item::ConstInitVal::Array(const_exps) => const_exps
@@ -327,6 +345,9 @@ impl ToKoopaIR for item::ConstInitVal {
 impl ToKoopaIR for item::ConstExp {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         self.exp.convert(ctx)
     }
 
@@ -338,6 +359,9 @@ impl ToKoopaIR for item::ConstExp {
 
 impl ToKoopaIR for item::VarDecl {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         ensure!(self.btype.is_i32(), "Unknown type for variable declaration");
         ctx.set_def_type(self.btype.clone());
         self.var_defs
@@ -356,6 +380,9 @@ impl ToKoopaIR for item::VarDecl {
 
 impl ToKoopaIR for item::VarDef {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         let ty = ctx.curr_def_type().unwrap();
         // Not an array
         if self.arr_dim.is_empty() {
@@ -524,6 +551,9 @@ impl ToKoopaIR for item::VarDef {
 impl ToKoopaIR for item::InitVal {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::InitVal::Normal(exp) => exp.convert(ctx),
             item::InitVal::Array(exps) => exps.iter().try_for_each(|exp| exp.convert(ctx)),
@@ -542,6 +572,9 @@ impl ToKoopaIR for item::InitVal {
 impl ToKoopaIR for item::Stmt {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::Stmt::Assign(assign_stmt) => assign_stmt.convert(ctx),
             item::Stmt::Return(return_stmt) => return_stmt.convert(ctx),
@@ -561,6 +594,9 @@ impl ToKoopaIR for item::Stmt {
 
 impl ToKoopaIR for item::Break {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         let loop_end = ctx.curr_loop().context("Use break outside of loop")?.1;
         let jump_to_loop_end = ctx.new_local_value().jump(loop_end);
         ctx.push_inst(jump_to_loop_end);
@@ -574,6 +610,9 @@ impl ToKoopaIR for item::Break {
 
 impl ToKoopaIR for item::Continue {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         let loop_start = ctx.curr_loop().context("Use continue outside of loop")?.0;
         let jump_to_loop_start = ctx.new_local_value().jump(loop_start);
         ctx.push_inst(jump_to_loop_start);
@@ -587,6 +626,9 @@ impl ToKoopaIR for item::Continue {
 
 impl ToKoopaIR for item::WhileStmt {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         // create 3 basic blocks for while loop
         let entry = ctx.new_bb().basic_block(Some("%while_entry".into()));
         ctx.register_bb(entry);
@@ -623,6 +665,9 @@ impl ToKoopaIR for item::WhileStmt {
 
 impl ToKoopaIR for item::ReturnStmt {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         let v_ret = match &self.exp {
             Some(ret_exp) => {
                 ret_exp.convert(ctx)?;
@@ -642,6 +687,9 @@ impl ToKoopaIR for item::ReturnStmt {
 
 impl ToKoopaIR for item::IfStmt {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         // Get condition exp value.
         self.cond.convert(ctx)?;
         let cond_val = ctx.pop_val().unwrap();
@@ -682,6 +730,9 @@ impl ToKoopaIR for item::IfStmt {
 
 impl ToKoopaIR for item::AssignStmt {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         if ctx.is_constant(&self.l_val) {
             bail!("Can't modify a constant");
         }
@@ -710,6 +761,9 @@ impl ToKoopaIR for item::AssignStmt {
 impl ToKoopaIR for item::Exp {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         self.lor_exp.convert(ctx)
     }
 
@@ -721,6 +775,9 @@ impl ToKoopaIR for item::Exp {
 
 impl ToKoopaIR for item::LOrExp {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::LOrExp::LAndExp(land_exp) => land_exp.convert(ctx)?,
             item::LOrExp::Comp(lor_exp, land_exp) => {
@@ -753,6 +810,7 @@ impl ToKoopaIR for item::LOrExp {
 
                 // check rhs
                 let original = ctx.set_curr_bb(rhs_bb).unwrap();
+                // ctx.set_curr_bb(rhs_bb).unwrap();
                 land_exp.convert(ctx)?;
                 let rhs = ctx.pop_val().unwrap();
 
@@ -821,6 +879,9 @@ impl ToKoopaIR for item::LOrExp {
 
 impl ToKoopaIR for item::LAndExp {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::LAndExp::EqExp(eq_exp) => eq_exp.convert(ctx)?,
             item::LAndExp::Comp(land_exp, eq_exp) => {
@@ -853,9 +914,9 @@ impl ToKoopaIR for item::LAndExp {
 
                 // check rhs
                 let original = ctx.set_curr_bb(rhs_bb).unwrap();
+                // ctx.set_curr_bb(rhs_bb).unwrap();
                 eq_exp.convert(ctx)?;
                 let rhs = ctx.pop_val().unwrap();
-
                 // Constant folding
                 if let ValueKind::Integer(int_lhs) = ctx.curr_func_data().dfg().value(lhs).kind()
                     && let ValueKind::Integer(int_rhs) =
@@ -881,6 +942,7 @@ impl ToKoopaIR for item::LAndExp {
 
                     return Ok(());
                 }
+
                 let rhs_ne_0 = ctx.new_local_value().binary(BinaryOp::NotEq, rhs, zero);
                 ctx.push_inst(rhs_ne_0);
 
@@ -923,6 +985,9 @@ impl ToKoopaIR for item::LAndExp {
 impl ToKoopaIR for item::EqExp {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::EqExp::RelExp(rel_exp) => rel_exp.convert(ctx),
             item::EqExp::Comp(lhs_eq, op, rhs_rel) => {
@@ -949,6 +1014,9 @@ impl ToKoopaIR for item::EqExp {
 impl ToKoopaIR for item::RelExp {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::RelExp::AddExp(add_exp) => add_exp.convert(ctx),
             item::RelExp::Comp(lhs_rel, op, rhs_add) => {
@@ -975,6 +1043,9 @@ impl ToKoopaIR for item::RelExp {
 impl ToKoopaIR for item::AddExp {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::AddExp::MulExp(mul_exp) => mul_exp.convert(ctx),
             item::AddExp::Comp(lhs_add, op, rhs_mul) => {
@@ -1001,6 +1072,9 @@ impl ToKoopaIR for item::AddExp {
 impl ToKoopaIR for item::MulExp {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::MulExp::UnaryExp(unary_exp) => unary_exp.convert(ctx),
             item::MulExp::Comp(lhs_mul, op, rhs_unary) => {
@@ -1027,6 +1101,9 @@ impl ToKoopaIR for item::MulExp {
 impl ToKoopaIR for item::UnaryExp {
     #[inline]
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::UnaryExp::PrimaryExp(exp) => exp.convert(ctx),
             item::UnaryExp::Unary(unary_op, unary_exp) => {
@@ -1052,6 +1129,9 @@ impl ToKoopaIR for item::UnaryExp {
 
 impl ToKoopaIR for item::FuncCall {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         let args = self
             .args
             .iter()
@@ -1089,6 +1169,9 @@ impl ToKoopaIR for item::FuncCall {
 
 impl ToKoopaIR for item::PrimaryExp {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         match self {
             item::PrimaryExp::Exp(exp) => exp.convert(ctx)?,
             item::PrimaryExp::Number(num) => {
@@ -1104,8 +1187,7 @@ impl ToKoopaIR for item::PrimaryExp {
                 if l_val.index.is_empty() {
                     match ctx.get_symbol(&l_val.ident).unwrap() {
                         Symbol::Constant(const_val) => {
-                            let int = ctx.as_i32(const_val).unwrap();
-                            let int = ctx.new_local_value().integer(int);
+                            let int = ctx.as_i32_val(const_val);
                             ctx.push_val(int);
                         }
                         Symbol::Variable(var_ptr) => {
@@ -1204,6 +1286,9 @@ impl ToKoopaIR for item::PrimaryExp {
 
 impl ToKoopaIR for item::LVal {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         let symbol = ctx
             .get_symbol(&self.ident)
             .ok_or(anyhow!("Variable {} not exists.", &*self.ident))?;
@@ -1249,6 +1334,9 @@ impl ToKoopaIR for item::LVal {
 
 impl ToKoopaIR for koopa::ir::BinaryOp {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         let rhs = ctx.pop_val().unwrap();
         let lhs = ctx.pop_val().unwrap();
 
@@ -1355,6 +1443,9 @@ impl ToKoopaIR for koopa::ir::BinaryOp {
 
 impl ToKoopaIR for item::UnaryOp {
     fn convert(&self, ctx: &mut AstGenContext) -> Result<()> {
+        if ctx.is_complete_bb() {
+            return Ok(());
+        }
         // if `+` is unary then it will do nothing.
         if matches!(self, item::UnaryOp::Add) {
             return Ok(());

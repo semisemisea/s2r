@@ -1,4 +1,4 @@
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use koopa::ir::{BasicBlock, Value, ValueKind};
 
@@ -35,8 +35,12 @@ where
         }
     }
 
-    pub fn get_id(&self, bb: K) -> I {
-        *self.id_pos.get(&bb).unwrap()
+    pub fn get_id_safe(&self, key: K) -> Option<&I> {
+        self.id_pos.get(&key)
+    }
+
+    pub fn get_id(&self, key: K) -> I {
+        *self.id_pos.get(&key).unwrap()
     }
 
     pub fn search_id(&self, id: I) -> K {
