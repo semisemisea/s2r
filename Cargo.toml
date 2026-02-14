@@ -11,7 +11,7 @@ lalrpop = "0.22.2"
 
 [dependencies]
 anyhow = "1.0.100"
-koopa = "0.0.9"
+koopa = { git = "https://github.com/semisemisea/koopa.git" }
 lalrpop-util = { version = "0.22.2", features = ["lexer"] }
 num_enum = "0.7.5"
 thiserror = "2.0.17"
