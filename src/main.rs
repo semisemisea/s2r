@@ -8,6 +8,11 @@ mod opt;
 mod register_alloc;
 mod riscv_utils;
 
+const SSA_ENABLE: bool = true;
+const SCCP_ENABLE: bool = true;
+const UBB_ENABLE: bool = true;
+const DCE_ENABLE: bool = true;
+
 use crate::{
     ast_utils::{AstGenContext, ToKoopaIR},
     riscv_utils::AsmGenContext,
@@ -39,13 +44,41 @@ fn main() -> std::io::Result<()> {
     // let rdv = opt::dce::RemoveDiscardedValue;
     // pass_manager.register(Pass::Module(Box::new(rdv)));
 
-    let ubb = opt::dce::UnreachableBasicBlock;
-    pass_manager.register(Pass::Function(Box::new(ubb)));
+    if UBB_ENABLE {
+        let ubb = opt::dce::UnreachableBasicBlock;
+        pass_manager.register(Pass::Function(Box::new(ubb)));
+    }
 
-    let ssa = opt::ssa::SSATransform;
-    pass_manager.register(Pass::Function(Box::new(ssa)));
+    if SSA_ENABLE {
+        let ssa = opt::ssa::SSATransform;
+        pass_manager.register(Pass::Function(Box::new(ssa)));
+    }
+
+    if DCE_ENABLE {
+        let dpe = opt::dce::DeadPhiElimination;
+        pass_manager.register(Pass::Function(Box::new(dpe)));
+        let dce = opt::dce::DeadCodeElimination;
+        pass_manager.register(Pass::Module(Box::new(dce)));
+    }
+
+    if SCCP_ENABLE {
+        let sccp = opt::const_prop::SparseConditionConstantPropagation;
+        pass_manager.register(Pass::Function(Box::new(sccp)));
+        // let ubb = opt::dce::UnreachableBasicBlock;
+        // pass_manager.register(Pass::Function(Box::new(ubb)));
+        // let joe = opt::dce::JumpOnlyElimination;
+        // pass_manager.register(Pass::Function(Box::new(joe)));
+    }
+
+    if DCE_ENABLE {
+        let dpe = opt::dce::DeadPhiElimination;
+        pass_manager.register(Pass::Function(Box::new(dpe)));
+        let dce = opt::dce::DeadCodeElimination;
+        pass_manager.register(Pass::Module(Box::new(dce)));
+    }
 
     pass_manager.run_passes(&mut ir_ctx.program);
+
     match mode.as_str() {
         "-koopa" => {
             let mut g = koopa::back::KoopaGenerator::new(Vec::new());
@@ -70,8 +103,8 @@ fn main() -> std::io::Result<()> {
             let mut g = koopa::back::KoopaGenerator::new(Vec::new());
             g.generate_on(&ir_ctx.end()).unwrap();
             let ir_text = std::str::from_utf8(&g.writer()).unwrap().to_string();
-            #[cfg(debug_assertions)]
-            eprintln!("{ir_text}");
+            // #[cfg(debug_assertions)]
+            // eprintln!("{ir_text}");
             std::fs::write("hello.koopa", ir_text.clone())?;
 
             let driver = koopa::front::Driver::from(ir_text);

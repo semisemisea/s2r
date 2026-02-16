@@ -2,7 +2,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use koopa::{
-    ir::{BasicBlock, Function, FunctionData, Program, Value, ValueKind, entities::ValueData},
+    ir::{
+        BasicBlock, Function, FunctionData, Program, Value, ValueKind,
+        builder::{BasicBlockBuilder, LocalInstBuilder},
+        dfg,
+        entities::ValueData,
+    },
     opt::{FunctionPass, ModulePass},
 };
 
@@ -11,7 +16,7 @@ use crate::opt::utils::{BId, IDAllocator, VId, build_cfg};
 pub struct DeadPhiElimination;
 pub struct DeadCodeElimination;
 pub struct UnreachableBasicBlock;
-pub struct RemoveDiscardedValue;
+pub struct JumpOnlyElimination;
 
 const REMOVE_FLAG: bool = true;
 
@@ -203,9 +208,9 @@ impl FunctionPass for DeadPhiElimination {
         }
         for (i, unused_params_index) in unused_params_indices.iter().enumerate() {
             let bb = bb_allocator.search_id(i);
-            let params_mut = data.dfg_mut().bb_mut(bb).params_mut();
             for &index in unused_params_index.iter() {
-                params_mut.swap_remove(index);
+                let val = data.dfg_mut().bb_mut(bb).params_mut().swap_remove(index);
+                data.dfg_mut().remove_value(val);
             }
 
             let jump_inst = data
@@ -226,7 +231,7 @@ impl FunctionPass for DeadPhiElimination {
                         };
 
                         for &index in unused_params_index.iter() {
-                            args_mut.swap_remove(index);
+                            let val = args_mut.swap_remove(index);
                         }
                     }
                     ValueKind::Jump(jump) => {
@@ -239,218 +244,6 @@ impl FunctionPass for DeadPhiElimination {
                 }
             }
         }
-    }
-}
-
-impl ModulePass for RemoveDiscardedValue {
-    fn run_on(&mut self, program: &mut Program) {
-        let mut set = HashSet::new();
-        for (&gval, _) in program.borrow_values().iter() {
-            mark_global_value(gval, program, &mut set);
-        }
-        let mut remove_list = program
-            .borrow_values()
-            .keys()
-            .filter(|&val| !set.contains(val))
-            .copied()
-            .collect::<VecDeque<_>>();
-        eprintln!("remove_list: {remove_list:?}");
-        while let Some(front) = remove_list.pop_front() {
-            if program.borrow_value(front).used_by().is_empty() {
-                program.remove_value(front);
-            } else {
-                remove_list.push_back(front);
-            }
-        }
-        for (&func, data) in program.funcs_mut() {
-            run_on_func(func, data);
-        }
-    }
-}
-
-fn run_on_func(func: Function, data: &mut FunctionData) {
-    // mark
-    let mut set = HashSet::new();
-    for (&bb, node) in data.layout().bbs() {
-        for (&val, _) in node.insts() {
-            // eprintln!("{val:?}");
-            // eprintln!("item kind: {:?}", data.dfg().value(val).kind());
-
-            mark_local_value(val, data, &mut set);
-        }
-    }
-    let mut remove_list = data
-        .dfg()
-        .values()
-        .keys()
-        .filter(|&val| !set.contains(val))
-        .copied()
-        .collect::<VecDeque<_>>();
-    for item in remove_list.iter() {
-        eprintln!("item kind: {:?}", data.dfg().value(*item).kind());
-    }
-    // eprintln!("remove_list: {remove_list:?}");
-    while let Some(front) = remove_list.pop_front() {
-        if data.dfg().value(front).used_by().is_empty() {
-            data.dfg_mut().remove_value(front);
-        } else if data
-            .dfg()
-            .value(front)
-            .used_by()
-            .iter()
-            .all(|x| !set.contains(x))
-        {
-            remove_list.push_back(front);
-        }
-    }
-}
-
-fn mark_global_value(val: Value, program: &Program, set: &mut HashSet<Value>) {
-    set.insert(val);
-    let vd = program.borrow_value(val);
-    match vd.kind() {
-        koopa::ir::ValueKind::Load(load) => mark_global_value(load.src(), program, set),
-        koopa::ir::ValueKind::Store(store) => {
-            mark_global_value(store.dest(), program, set);
-            mark_global_value(store.value(), program, set);
-        }
-        koopa::ir::ValueKind::GetPtr(get_ptr) => {
-            mark_global_value(get_ptr.src(), program, set);
-            mark_global_value(get_ptr.index(), program, set);
-        }
-        koopa::ir::ValueKind::GetElemPtr(get_elem_ptr) => {
-            mark_global_value(get_elem_ptr.src(), program, set);
-            mark_global_value(get_elem_ptr.index(), program, set);
-        }
-        koopa::ir::ValueKind::Binary(binary) => {
-            mark_global_value(binary.lhs(), program, set);
-            mark_global_value(binary.rhs(), program, set);
-        }
-        koopa::ir::ValueKind::Branch(branch) => {
-            mark_global_value(branch.cond(), program, set);
-            branch
-                .true_args()
-                .iter()
-                .for_each(|&val| mark_global_value(val, program, set));
-            branch
-                .false_args()
-                .iter()
-                .for_each(|&val| mark_global_value(val, program, set));
-        }
-        koopa::ir::ValueKind::Jump(jump) => {
-            jump.args()
-                .iter()
-                .for_each(|&val| mark_global_value(val, program, set));
-        }
-        koopa::ir::ValueKind::Call(call) => {
-            call.args()
-                .iter()
-                .for_each(|&val| mark_global_value(val, program, set));
-        }
-        koopa::ir::ValueKind::Return(ret) => {
-            if let Some(val) = ret.value() {
-                mark_global_value(val, program, set);
-            }
-        }
-        koopa::ir::ValueKind::Integer(integer) => {}
-        koopa::ir::ValueKind::ZeroInit(zero_init) => {}
-        koopa::ir::ValueKind::Undef(undef) => {}
-        koopa::ir::ValueKind::Aggregate(aggregate) => {
-            aggregate
-                .elems()
-                .iter()
-                .for_each(|&val| mark_global_value(val, program, set));
-        }
-        koopa::ir::ValueKind::FuncArgRef(func_arg_ref) => {}
-        koopa::ir::ValueKind::BlockArgRef(block_arg_ref) => {}
-        koopa::ir::ValueKind::Alloc(alloc) => {}
-        koopa::ir::ValueKind::GlobalAlloc(global_alloc) => {
-            mark_global_value(global_alloc.init(), program, set);
-        }
-    }
-}
-
-fn mark_local_value(val: Value, data: &FunctionData, set: &mut HashSet<Value>) {
-    set.insert(val);
-    let vd = data.dfg().value(val);
-    match vd.kind() {
-        koopa::ir::ValueKind::Load(load) => mark_local_value(load.src(), data, set),
-        koopa::ir::ValueKind::Store(store) => {
-            mark_local_value(store.dest(), data, set);
-            mark_local_value(store.value(), data, set);
-        }
-        koopa::ir::ValueKind::GetPtr(get_ptr) => {
-            mark_local_value(get_ptr.src(), data, set);
-            mark_local_value(get_ptr.index(), data, set);
-        }
-        koopa::ir::ValueKind::GetElemPtr(get_elem_ptr) => {
-            mark_local_value(get_elem_ptr.src(), data, set);
-            mark_local_value(get_elem_ptr.index(), data, set);
-        }
-        koopa::ir::ValueKind::Binary(binary) => {
-            mark_local_value(binary.lhs(), data, set);
-            mark_local_value(binary.rhs(), data, set);
-        }
-        koopa::ir::ValueKind::Branch(branch) => {
-            mark_local_value(branch.cond(), data, set);
-            branch
-                .true_args()
-                .iter()
-                .for_each(|&val| mark_local_value(val, data, set));
-            branch
-                .false_args()
-                .iter()
-                .for_each(|&val| mark_local_value(val, data, set));
-        }
-        koopa::ir::ValueKind::Jump(jump) => {
-            jump.args()
-                .iter()
-                .for_each(|&val| mark_local_value(val, data, set));
-        }
-        koopa::ir::ValueKind::Call(call) => {
-            call.args()
-                .iter()
-                .for_each(|&val| mark_local_value(val, data, set));
-        }
-        koopa::ir::ValueKind::Return(ret) => {
-            if let Some(val) = ret.value() {
-                mark_local_value(val, data, set);
-            }
-        }
-        koopa::ir::ValueKind::Integer(integer) => {}
-        koopa::ir::ValueKind::ZeroInit(zero_init) => {}
-        koopa::ir::ValueKind::Undef(undef) => {}
-        koopa::ir::ValueKind::Aggregate(aggregate) => {
-            aggregate
-                .elems()
-                .iter()
-                .for_each(|&val| mark_local_value(val, data, set));
-        }
-        koopa::ir::ValueKind::FuncArgRef(func_arg_ref) => {}
-        koopa::ir::ValueKind::BlockArgRef(block_arg_ref) => {}
-        koopa::ir::ValueKind::Alloc(alloc) => {}
-        koopa::ir::ValueKind::GlobalAlloc(global_alloc) => {
-            mark_local_value(global_alloc.init(), data, set);
-        }
-    }
-}
-
-fn use_the(this: &ValueData) -> Vec<Value> {
-    use koopa::ir::ValueKind::*;
-    // eprintln!("{:?}", this);
-    match this.kind() {
-        Integer(_) | Jump(_) | Branch(_) | Alloc(_) | GlobalAlloc(_) | ZeroInit(_) | Undef(_)
-        | FuncArgRef(_) | BlockArgRef(_) => {
-            vec![]
-        }
-        Aggregate(aggregate) => aggregate.elems().to_vec(),
-        Load(load) => vec![load.src()],
-        Store(store) => vec![store.value(), store.dest()],
-        GetPtr(get_ptr) => vec![get_ptr.src()],
-        GetElemPtr(get_elem_ptr) => vec![get_elem_ptr.src(), get_elem_ptr.index()],
-        Binary(binary) => vec![binary.lhs(), binary.rhs()],
-        Call(call) => todo!(),
-        Return(ret) => ret.value().map(|x| vec![x]).unwrap_or_default(),
     }
 }
 
@@ -524,55 +317,88 @@ fn _dfs_remove(val: Value, data: &FunctionData, remove_list: &mut Vec<Value>) {
     }
 }
 
-// impl ModulePass for DeadCodeElimination {
-//     fn run_on(&mut self, program: &mut Program) {
-//         for (_func, data) in program.funcs_mut().iter_mut() {
-//             let mut fontier = VecDeque::new();
-//             let mut marker = HashSet::new();
-//             for (&_bb, node) in data.layout().bbs().iter() {
-//                 let val = node.insts().back_key().unwrap();
-//                 // TODO: Assert that end instruction is `br`, `ret` or `jump`
-//                 fontier.push_back(*val);
-//                 marker.insert(*val);
-//             }
-//             while !fontier.is_empty() {
-//                 let inst = fontier.pop_front().unwrap();
-//                 let val_data = data.dfg_mut().value(inst);
-//                 for next in use_the(val_data).iter() {
-//                     if marker.contains(next) {
-//                         continue;
-//                     }
-//                     let next_data = data.dfg_mut().value(*next);
-//                     let used_by = next_data.used_by();
-//                     if used_by.is_subset(&marker) {
-//                         fontier.push_back(*next);
-//                         marker.insert(*next);
-//                     }
-//                 }
-//             }
-//             let mut cursor_bb = data.layout_mut().bbs_mut().cursor_front_mut();
-//             while !cursor_bb.is_null() {
-//                 let bb_node = cursor_bb.node_mut().unwrap();
-//                 // for bb_node in data.layout().bbs().nodes() {
-//                 let mut cursor_val = bb_node.insts_mut().cursor_front_mut();
-//                 while !cursor_val.is_null() {
-//                     if !marker.contains(cursor_val.key().unwrap()) {
-//                         cursor_val.remove_current();
-//                     }
-//                     cursor_val.move_next();
-//                 }
-//                 cursor_bb.move_next();
-//             }
-//             let mut cursor = data.layout().bbs().cursor_front_mut();
-//             while !cursor.is_null() {
-//                 let node = cursor.node_mut().unwrap();
-//                 for (&val, node) in node.insts_mut().iter() {
-//                     if !marker.contains(&val) {
-//                         data.dfg_mut().remove_value(val);
-//                     }
-//                 }
-//                 cursor.move_next();
-//             }
-//         // }
-//     }
-// }
+#[inline]
+fn is_jump_inst(val: Value, data: &FunctionData) -> bool {
+    matches!(data.dfg().value(val).kind(), ValueKind::Jump(..))
+}
+
+impl FunctionPass for JumpOnlyElimination {
+    fn run_on(&mut self, func: Function, data: &mut FunctionData) {
+        let Some(entry_bb) = data.layout().entry_bb() else {
+            return;
+        };
+        // let virtual_entry_bb = data
+        //     .dfg_mut()
+        //     .new_bb()
+        //     .basic_block(Some("%v_entry".to_string()));
+        // data.layout_mut().bbs_mut().push_key_front(virtual_entry_bb);
+        // let jump = data.dfg_mut().new_value().jump(entry_bb);
+        // data.layout_mut()
+        //     .bb_mut(virtual_entry_bb)
+        //     .insts_mut()
+        //     .push_key_back(jump)
+        //     .unwrap();
+        let worklist = data
+            .layout()
+            .bbs()
+            .iter()
+            .filter(|&(&bb, node)| {
+                eprintln!("{:?}", data.dfg().bb(bb).name());
+                let val = *node.insts().front_key().unwrap();
+                if let ValueKind::Jump(jump) = data.dfg().value(val).kind() {
+                    eprintln!("1");
+                    eprintln!("{:?} {:?}", jump.args(), data.dfg().bb(bb).params());
+                    jump.args().iter().eq(data.dfg().bb(bb).params())
+                } else {
+                    false
+                }
+            })
+            .map(|(&bb, node)| bb)
+            .collect::<Vec<_>>();
+
+        for bb in worklist.into_iter().rev() {
+            eprintln!("{:?}", data.dfg().bb(bb).name());
+            let node = data.layout().bbs().node(&bb).unwrap();
+            let prev_jump_insts = data
+                .dfg()
+                .bb(bb)
+                .used_by()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+
+            let target_bb = if let ValueKind::Jump(jump) =
+                data.dfg().value(*node.insts().front_key().unwrap()).kind()
+            {
+                jump.target()
+            } else {
+                unreachable!()
+            };
+
+            for prev_jump_inst in prev_jump_insts {
+                match data.dfg_mut().value_mut(prev_jump_inst).kind_mut() {
+                    ValueKind::Jump(jump) => *jump.target_mut() = target_bb,
+                    ValueKind::Branch(branch) => {
+                        if branch.true_bb() == bb {
+                            *branch.true_bb_mut() = target_bb;
+                        } else {
+                            *branch.false_bb_mut() = target_bb;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            // if data.layout().entry_bb().unwrap() != bb {
+            data.layout_mut().bbs_mut().remove(&bb);
+            // } else {
+            //     let (key, node) = data.layout_mut().bbs_mut().remove(&target_bb).unwrap();
+            //     data.layout_mut().bbs_mut().remove(&bb);
+            //     data.layout_mut().bbs_mut().push_front(key, node);
+            // }
+        }
+        // data.layout_mut().bbs_mut().pop_front();
+        // for (&bb, data) in data.layout().
+        // data.layout_mut().bbs_mut().pusf
+    }
+}

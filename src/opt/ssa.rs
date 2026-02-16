@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::opt::utils::{self, BId, CFGGraph, IDAllocator, VId};
 
-const FUNC_ARG_OPT_ENABLE: bool = true;
+const FUNC_ARG_OPT_ENABLE: bool = false;
 
 use koopa::{
     ir::{
@@ -160,13 +160,9 @@ impl FunctionPass for SSATransform {
         // });
         remove_list.into_iter().rev().for_each(|(val, bb)| {
             let vd = data.dfg().value(val);
-            eprintln!("delete check {:?} {:?}, {:?}", val, vd.kind(), vd.used_by());
+            // eprintln!("delete check {:?} {:?}, {:?}", val, vd.kind(), vd.used_by());
             let used_by = vd.used_by().iter().copied().collect::<Vec<_>>();
             for val in used_by.into_iter().rev() {
-                let rmd = data.dfg().value(val);
-                eprintln!("{:?}", val);
-                eprintln!("{:?}", rmd.kind());
-                eprintln!("{:?}", rmd.used_by());
                 data.dfg_mut().remove_value(val);
             }
             data.layout_mut().bb_mut(bb).insts_mut().remove(&val);
@@ -245,7 +241,7 @@ fn dfs(
                     let rep_with = *st[load_id].last().unwrap();
                     let list = val_data.used_by().iter().copied().collect::<Vec<_>>();
                     for used_by in list {
-                        visit_and_replace(data, used_by, val, rep_with);
+                        utils::visit_and_replace(data, used_by, val, rep_with);
                     }
                     remove_list.push((val, bb));
                 }
@@ -323,110 +319,6 @@ fn dfs(
 
     for id in history {
         st[id].pop();
-    }
-}
-
-fn visit_and_replace(data: &mut FunctionData, used_by: Value, rep: Value, rep_with: Value) {
-    let rep_val_data = data.dfg().value(used_by);
-    #[allow(unused_variables)]
-    match rep_val_data.kind() {
-        ValueKind::Integer(integer) => todo!(),
-        ValueKind::ZeroInit(zero_init) => todo!(),
-        ValueKind::Undef(undef) => todo!(),
-        ValueKind::Aggregate(aggregate) => todo!(),
-        ValueKind::FuncArgRef(func_arg_ref) => todo!(),
-        ValueKind::BlockArgRef(block_arg_ref) => todo!(),
-        ValueKind::Alloc(alloc) => todo!(),
-        ValueKind::GlobalAlloc(global_alloc) => todo!(),
-        ValueKind::Load(load) => todo!(),
-
-        ValueKind::Store(store) => {
-            if store.value() == rep {
-                let dest = store.dest();
-                data.dfg_mut()
-                    .replace_value_with(used_by)
-                    .store(rep_with, dest);
-            }
-        }
-        ValueKind::GetPtr(get_ptr) => {
-            if get_ptr.index() == rep {
-                let src = get_ptr.src();
-                data.dfg_mut()
-                    .replace_value_with(used_by)
-                    .get_ptr(src, rep_with);
-            }
-        }
-        ValueKind::GetElemPtr(get_elem_ptr) => {
-            if get_elem_ptr.index() == rep {
-                let src = get_elem_ptr.src();
-                data.dfg_mut()
-                    .replace_value_with(used_by)
-                    .get_elem_ptr(src, rep_with);
-            }
-        }
-        ValueKind::Binary(binary) => {
-            let lhs = if binary.lhs() == rep {
-                rep_with
-            } else {
-                binary.lhs()
-            };
-            let rhs = if binary.rhs() == rep {
-                rep_with
-            } else {
-                binary.rhs()
-            };
-            let op = binary.op();
-            data.dfg_mut()
-                .replace_value_with(used_by)
-                .binary(op, lhs, rhs);
-        }
-        ValueKind::Branch(branch) => {
-            let true_args = branch
-                .true_args()
-                .iter()
-                .map(|&val| if val == rep { rep_with } else { val })
-                .collect();
-            let false_args = branch
-                .false_args()
-                .iter()
-                .map(|&val| if val == rep { rep_with } else { val })
-                .collect();
-            let (cond, true_bb, false_bb) = (branch.cond(), branch.true_bb(), branch.false_bb());
-            data.dfg_mut()
-                .replace_value_with(used_by)
-                .branch_with_args(cond, true_bb, false_bb, true_args, false_args);
-        }
-        ValueKind::Jump(jump) => {
-            let args = jump
-                .args()
-                .iter()
-                .map(|&val| if val == rep { rep_with } else { val })
-                .collect();
-            let target = jump.target();
-            data.dfg_mut()
-                .replace_value_with(used_by)
-                .jump_with_args(target, args);
-        }
-        ValueKind::Call(call) => {
-            let args = call
-                .args()
-                .iter()
-                .map(|&val| if val == rep { rep_with } else { val })
-                .collect();
-            let callee = call.callee();
-            data.dfg_mut()
-                .replace_value_with(used_by)
-                .call(callee, args);
-        }
-        ValueKind::Return(ret) => {
-            if let Some(ret_val) = ret.value()
-                && ret_val == rep
-            {
-                data.dfg_mut()
-                    .replace_value_with(used_by)
-                    .ret(Some(rep_with));
-            }
-        }
     }
 }
 
