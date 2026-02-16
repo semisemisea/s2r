@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use key_node_list::KeyValueList;
 use koopa::ir::{BasicBlock, BinaryOp, Function, FunctionData, Program, Type, Value, ValueKind};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
@@ -72,6 +73,7 @@ impl Register {
 /// Enum representing RISC-V instructions.
 /// Each variant corresponds to a RISC-V instruction, with fields for operands.
 /// Documentation for each variant describes its semantics and operand usage.
+#[derive(Debug)]
 pub enum RiscvInst {
     /// Load immediate: `li rd, imm`
     /// Loads a 32-bit immediate value into register `rd`.
@@ -292,6 +294,15 @@ pub enum RiscvInst {
     call {
         callee: String,
     },
+    _string {
+        str: String,
+    },
+}
+
+impl RiscvInst {
+    fn is_real_inst(&self) -> bool {
+        !matches!(self, RiscvInst::_string { .. })
+    }
 }
 
 impl std::fmt::Display for RiscvInst {
@@ -331,6 +342,7 @@ impl std::fmt::Display for RiscvInst {
             RiscvInst::beqz { rs, label } => write!(f, "beqz  {}, {}", rs, label),
             RiscvInst::bnez { rs, label } => write!(f, "bnez  {}, {}", rs, label),
             RiscvInst::call { callee } => write!(f, "call  {}", callee),
+            RiscvInst::_string { str } => write!(f, "{}", str),
         }
     }
 }
@@ -397,9 +409,13 @@ impl RegisterManager {
     }
 }
 
+pub type List = KeyValueList<usize, RiscvInst>;
+
 pub struct AsmGenContext {
     // buffer: asm text.
-    buf: String,
+    // buf: String,
+    // inst_list: Vec<RiscvInst>,
+    inst_list: List,
     indent_level: usize,
     func_stack: Vec<Function>,
     stack_slots: HashMap<Value, usize>,
@@ -412,10 +428,17 @@ pub trait GenerateAsm {
     fn generate(&self, program: &Program, ctx: &mut AsmGenContext) -> anyhow::Result<()>;
 }
 
+macro_rules! push {
+    ($list: expr, $item: expr) => {
+        let len = $list.len();
+        $list.push_back(len, $item).unwrap();
+    };
+}
+
 impl AsmGenContext {
     pub fn new() -> AsmGenContext {
         AsmGenContext {
-            buf: String::new(),
+            inst_list: List::new(),
             indent_level: 0,
             func_stack: Vec::new(),
             stack_slots: HashMap::new(),
@@ -458,7 +481,7 @@ impl AsmGenContext {
         self.stack_slots.get(&val).copied()
     }
 
-    pub fn generate(&mut self, program: &Program) -> anyhow::Result<()> {
+    pub fn generate(mut self, program: &Program) -> anyhow::Result<List> {
         // Target platform is 32bit.
         // So before actual generation we set the size of ptr.
         Type::set_ptr_size(4);
@@ -512,7 +535,7 @@ impl AsmGenContext {
                             }
                         }
                     }
-                    recursive(agg, self, program);
+                    recursive(agg, &mut self, program);
                 }
                 _ => {}
             };
@@ -534,11 +557,11 @@ impl AsmGenContext {
 
             self.push_func(func);
             let func_data = program.func(func);
-            func_data.generate(program, self)?;
+            func_data.generate(program, &mut self)?;
             self.pop_func();
             self.writeln("");
         }
-        Ok(())
+        Ok(self.inst_list)
     }
 
     #[inline]
@@ -546,24 +569,17 @@ impl AsmGenContext {
         self.func_stack.push(func);
     }
 
-    #[inline]
-    pub fn end(self) -> String {
-        self.buf
-    }
-
     pub fn writeln(&mut self, string: &str) {
-        for _ in 0..self.indent_level * SHIFT_WIDTH {
-            self.buf.push(' ');
-        }
-        self.buf.push_str(string);
-        self.buf.push('\n');
+        push!(
+            self.inst_list,
+            RiscvInst::_string {
+                str: string.to_string(),
+            }
+        );
     }
 
     pub fn write_inst(&mut self, inst: RiscvInst) {
-        for _ in 0..self.indent_level * SHIFT_WIDTH {
-            self.buf.push(' ');
-        }
-        self.buf += format!("{}\n", inst).as_str();
+        push!(self.inst_list, inst);
     }
 
     pub fn prologue(&mut self, offset: usize, call_ra: bool) {
@@ -1022,4 +1038,19 @@ impl AsmGenContext {
             label: self.get_bb_name(false_bb, program),
         });
     }
+}
+
+pub fn end(insts: List) -> String {
+    let mut buf = String::new();
+    for inst_node in insts.nodes() {
+        let inst = inst_node.value();
+        if inst.is_real_inst() {
+            for _ in 0..SHIFT_WIDTH {
+                buf += " ";
+            }
+        }
+        buf += inst.to_string().as_str();
+        buf += "\n"
+    }
+    buf
 }
