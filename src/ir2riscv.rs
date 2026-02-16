@@ -2,11 +2,13 @@ use koopa::ir::{FunctionData, Program, TypeKind, Value, ValueKind, values};
 
 use crate::riscv_utils::{AsmGenContext, GenerateAsm};
 
+const AUTO_FUNC_ARG_ON_STACK: bool = true;
+
+#[inline]
 fn inst_size(func: &FunctionData, val: Value) -> usize {
-    let data = func.dfg().value(val);
-    match data.kind() {
-        ValueKind::Alloc(..) => ptr_size(data.ty()),
-        _ => data.ty().size(),
+    match func.dfg().value(val).kind() {
+        ValueKind::Alloc(..) => ptr_size(func.dfg().value(val).ty()),
+        _ => func.dfg().value(val).ty().size(),
     }
 }
 
@@ -43,7 +45,10 @@ impl GenerateAsm for FunctionData {
         //     eprintln!();
         // }
 
-        let offset = inst_offset + if call_ra { 4 } else { 0 } + (max_args.max(8) - 8) * 4;
+        let offset = inst_offset
+            + if call_ra { 4 } else { 0 }
+            + (max_args.max(8) - 8) * 4
+            + self.params().len() * 4;
         // According to RISC-V, sp_offset should be aligned with 16.
         let offset = if (offset & 0x0F) != 0 {
             (offset + 0x0F) >> 4 << 4
@@ -52,15 +57,38 @@ impl GenerateAsm for FunctionData {
         };
         ctx.prologue(offset, call_ra);
 
+        let curr_offset = (max_args.max(8) - 8) * 4;
+
+        let mut curr_offset = if AUTO_FUNC_ARG_ON_STACK {
+            self.params()
+                .iter()
+                .take(8)
+                .fold(curr_offset, |acc_offset, &param| {
+                    use crate::riscv_utils::Register::a0;
+                    ctx.insert_inst(param, acc_offset);
+                    // ctx.load_to_register(program, param);
+                    let ValueKind::FuncArgRef(arg_ref) =
+                        ctx.curr_func_data(program).dfg().value(param).kind()
+                    else {
+                        unreachable!()
+                    };
+                    let reg = (a0 as u8 + arg_ref.index() as u8).try_into().unwrap();
+                    ctx.alloc_para_reg(reg);
+                    ctx.save_word_at_inst(param);
+                    acc_offset + self.dfg().value(param).ty().size()
+                })
+        } else {
+            curr_offset
+        };
+
         self.params()
             .iter()
             .skip(8)
-            .fold(0usize, |acc_offset, &param| {
-                ctx.insert_inst(param, offset + acc_offset);
+            // TODO:
+            .fold(offset, |acc_offset, &param| {
+                ctx.insert_inst(param, acc_offset);
                 acc_offset + self.dfg().value(param).ty().size()
             });
-
-        let mut curr_offset = (max_args.max(8) - 8) * 4;
 
         for &bb_param in self
             .layout()

@@ -615,17 +615,12 @@ impl AsmGenContext {
                     imm: int.value(),
                 });
             }
-            ValueKind::FuncArgRef(arg_ref) if arg_ref.index() < 8 => {
-                use Register::a0;
-                let reg = (a0 as u8 + arg_ref.index() as u8).try_into().unwrap();
-                self.alloc_para_reg(reg);
-            }
+            // ValueKind::FuncArgRef(arg_ref) if arg_ref.index() < 8 => {
+            //     use Register::a0;
+            //     let reg = (a0 as u8 + arg_ref.index() as u8).try_into().unwrap();
+            //     self.alloc_para_reg(reg);
+            // }
             _ if !data.ty().is_unit() => {
-                eprintln!(
-                    "{:?} {:?}",
-                    val,
-                    self.curr_func_data(program).dfg().value(val).kind()
-                );
                 let offset = self.get_inst_offset(val).unwrap() as i32;
                 self.load_word(reg, offset, sp);
             }
@@ -651,11 +646,11 @@ impl AsmGenContext {
                 ValueKind::Integer(int) => {
                     self.load_imm(int.value());
                 }
-                ValueKind::FuncArgRef(arg_ref) if arg_ref.index() < 8 => {
-                    use Register::a0;
-                    let reg = (a0 as u8 + arg_ref.index() as u8).try_into().unwrap();
-                    self.alloc_para_reg(reg);
-                }
+                // ValueKind::FuncArgRef(arg_ref) if arg_ref.index() < 8 => {
+                //     use Register::a0;
+                //     let reg = (a0 as u8 + arg_ref.index() as u8).try_into().unwrap();
+                //     self.alloc_para_reg(reg);
+                // }
                 ValueKind::Undef(..) => {
                     self.undef_take_temp();
                 }
