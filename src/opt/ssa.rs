@@ -47,18 +47,18 @@ impl FunctionPass for SSATransform {
         eprintln!("name: {}", data.name());
 
         // Discretization. Assign each unique basic block with natural number 0..n
-        let mut bb_id = IDAllocator::new();
+        let mut bb_id = IDAllocator::new(1);
 
         eprintln!("showing");
         eprintln!("finished");
         // get graph and reverse graph
-        let (graph, prece) = utils::build_cfg(data, &mut bb_id);
+        let (graph, prece) = utils::build_cfg_both(data, &mut bb_id);
         eprintln!("graph: {graph:?}");
 
         // entry_bb must get 0 for id
         assert!(bb_id.get_id(data.layout().entry_bb().unwrap()) == 0);
 
-        let rpo_path = rpo_path(&graph);
+        let rpo_path = utils::rpo_path(&graph);
         // start from entry_bb so first element of RPO is zero
         assert!(rpo_path[0] == 0);
         eprintln!("rpo_path: {rpo_path:?}");
@@ -78,7 +78,7 @@ impl FunctionPass for SSATransform {
         eprintln!("dominance_frontier: {dom_frontier:?}");
 
         // find out where are varaibles defined.
-        let mut val_id = IDAllocator::new();
+        let mut val_id = IDAllocator::new(1);
         let val_usage = variable_analysis(&mut val_id, &mut bb_id, data);
         eprintln!("val_usage: {val_usage:?}");
 
@@ -354,7 +354,7 @@ pub fn variable_analysis(
                 } else {
                     let ty = utils::alloc_ty(val, data);
                     if ty.is_i32() {
-                        val_id.check_or_alloca(val);
+                        val_id.check_or_alloc(val);
                         val_usage.push(Vec::new());
                     }
                 }
@@ -393,23 +393,6 @@ pub fn dominance_analysis(
     }
 
     dominance_frontier
-}
-
-fn rpo_path(g: &CFGGraph) -> GPath {
-    let mut path = Vec::new();
-    let mut visited = Set::new();
-    fn dfs(node: usize, g: &CFGGraph, ans: &mut GPath, visited: &mut Set) {
-        visited.insert(node);
-        for &succ in g[&node].iter() {
-            if !visited.contains(&succ) {
-                dfs(succ, g, ans, visited);
-            }
-        }
-        ans.push(node);
-    }
-    dfs(0, g, &mut path, &mut visited);
-    path.reverse();
-    path
 }
 
 fn idom(prede: &CFGGraph, rpo: &[BId]) -> IDomMap {

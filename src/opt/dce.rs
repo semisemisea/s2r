@@ -11,7 +11,7 @@ use koopa::{
     opt::{FunctionPass, ModulePass},
 };
 
-use crate::opt::utils::{BId, IDAllocator, VId, build_cfg};
+use crate::opt::utils::{BId, IDAllocator, VId, build_cfg_both};
 
 pub struct DeadPhiElimination;
 pub struct DeadCodeElimination;
@@ -27,7 +27,7 @@ const REMOVE_FLAG: bool = true;
 /// Branches and Return
 impl ModulePass for DeadCodeElimination {
     fn run_on(&mut self, program: &mut Program) {
-        let mut val_id = IDAllocator::new();
+        let mut val_id = IDAllocator::new(1);
         for (&func, data) in program.funcs_mut() {
             self.run_on_func(func, data, &mut val_id);
         }
@@ -193,12 +193,12 @@ impl DeadCodeElimination {
 
 impl FunctionPass for DeadPhiElimination {
     fn run_on(&mut self, func: Function, data: &mut FunctionData) {
-        let mut bb_allocator: IDAllocator<BasicBlock, BId> = IDAllocator::new();
+        let mut bb_allocator: IDAllocator<BasicBlock, BId> = IDAllocator::new(1);
         let mut unused_params_indices = Vec::with_capacity(data.layout().bbs().len());
         // for (&bb, node) in data.layout().bbs() {
         //     bb_allocator.check_or_alloca(bb);
         for (assert_id, (&bb, node)) in data.layout().bbs().iter().enumerate() {
-            assert_eq!(bb_allocator.check_or_alloca(bb), assert_id);
+            assert_eq!(bb_allocator.check_or_alloc(bb), assert_id);
             let params = data.dfg().bb(bb).params();
             let unused_params_index = (0..params.len())
                 .filter(|&index| data.dfg().value(params[index]).used_by().is_empty())
@@ -252,49 +252,55 @@ impl FunctionPass for UnreachableBasicBlock {
         if data.layout().entry_bb().is_none() {
             return;
         }
-        let mut id_allocator = IDAllocator::new();
-        let (g, prece) = build_cfg(data, &mut id_allocator);
+        loop {
+            let mut id_allocator = IDAllocator::new(1);
+            let (g, prece) = build_cfg_both(data, &mut id_allocator);
 
-        let unreachable_bb = (1..id_allocator.cnt())
-            // in-degree is zero.
-            .filter(|id| prece[id].is_empty())
-            .collect::<Vec<_>>();
-
-        eprintln!("g:{:?}", g);
-        eprintln!("prece:{:?}", prece);
-        eprintln!("unreachable_bb:{:?}", unreachable_bb);
-
-        for id in unreachable_bb {
-            let bb = id_allocator.search_id(id);
-            eprintln!("delete basic block: {:?}", bb);
-            eprintln!("used_by check: {:?}", data.dfg().bb(bb).used_by());
-            // for val in data.dfg().bb(bb).used_by() {
-            //     eprintln!("{:?}", data.dfg().value(*val).kind());
-            // }
-            eprintln!("name: {:?}", data.dfg().bb(bb).name());
-            let remove_list = data
-                .dfg()
-                .bb(bb)
-                .used_by()
-                .iter()
-                .chain(
-                    data.layout()
-                        .bbs()
-                        .node(&bb)
-                        .unwrap()
-                        .insts()
-                        .iter()
-                        .map(|(x, _)| x),
-                )
-                .copied()
+            let unreachable_bb = (1..id_allocator.cnt())
+                // in-degree is zero.
+                .filter(|id| prece[id].is_empty())
                 .collect::<Vec<_>>();
-            for val in remove_list {
-                dfs_remove(val, data, bb);
-                // data.dfg_mut().remove_value(val);
+
+            if unreachable_bb.is_empty() {
+                break;
             }
 
-            data.layout_mut().bbs_mut().remove(&bb);
-            // data.dfg_mut().remove_bb(bb);
+            eprintln!("g:{:?}", g);
+            eprintln!("prece:{:?}", prece);
+            eprintln!("unreachable_bb:{:?}", unreachable_bb);
+
+            for id in unreachable_bb {
+                let bb = id_allocator.search_id(id);
+                eprintln!("delete basic block: {:?}", bb);
+                eprintln!("used_by check: {:?}", data.dfg().bb(bb).used_by());
+                // for val in data.dfg().bb(bb).used_by() {
+                //     eprintln!("{:?}", data.dfg().value(*val).kind());
+                // }
+                eprintln!("name: {:?}", data.dfg().bb(bb).name());
+                let remove_list = data
+                    .dfg()
+                    .bb(bb)
+                    .used_by()
+                    .iter()
+                    .chain(
+                        data.layout()
+                            .bbs()
+                            .node(&bb)
+                            .unwrap()
+                            .insts()
+                            .iter()
+                            .map(|(x, _)| x),
+                    )
+                    .copied()
+                    .collect::<Vec<_>>();
+                for val in remove_list {
+                    dfs_remove(val, data, bb);
+                    // data.dfg_mut().remove_value(val);
+                }
+
+                data.layout_mut().bbs_mut().remove(&bb);
+                // data.dfg_mut().remove_bb(bb);
+            }
         }
     }
 }
@@ -348,7 +354,8 @@ impl FunctionPass for JumpOnlyElimination {
                 if let ValueKind::Jump(jump) = data.dfg().value(val).kind() {
                     eprintln!("1");
                     eprintln!("{:?} {:?}", jump.args(), data.dfg().bb(bb).params());
-                    jump.args().iter().eq(data.dfg().bb(bb).params())
+                    jump.args().is_empty() && data.dfg().bb(bb).params().is_empty()
+                    // jump.args().iter().eq(data.dfg().bb(bb).params())
                 } else {
                     false
                 }

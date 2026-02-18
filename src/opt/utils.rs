@@ -1,4 +1,4 @@
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use koopa::ir::{BasicBlock, FunctionData, Value, ValueKind, builder::LocalInstBuilder};
 
@@ -7,30 +7,46 @@ pub struct IDAllocator<Key, Id> {
     id_pos: HashMap<Key, Id>,
     id_neg: HashMap<Id, Key>,
     cnt: Id,
+    increase_by: Id,
 }
+
+pub type VIDAlloc = IDAllocator<Value, VId>;
+pub type BIDAlloc = IDAllocator<BasicBlock, BId>;
 
 impl<K, I> IDAllocator<K, I>
 where
     K: Eq + std::hash::Hash + Copy,
-    I: std::ops::AddAssign<usize> + Default + Copy + Eq + std::hash::Hash,
+    I: std::ops::AddAssign<I> + Default + Copy + Eq + std::hash::Hash,
 {
-    pub fn new() -> IDAllocator<K, I> {
+    pub fn new(increase_by: I) -> IDAllocator<K, I> {
         Self {
             id_pos: HashMap::new(),
             id_neg: HashMap::new(),
             cnt: I::default(),
+            increase_by,
         }
     }
 
-    pub fn check_or_alloca(&mut self, key: K) -> I {
+    pub fn check_or_alloc(&mut self, key: K) -> I {
         match self.id_pos.entry(key) {
             Entry::Occupied(e) => *e.get(),
             Entry::Vacant(..) => {
                 self.id_pos.insert(key, self.cnt);
                 self.id_neg.insert(self.cnt, key);
                 let ret = self.cnt;
-                self.cnt += 1usize;
+                self.cnt += self.increase_by;
                 ret
+            }
+        }
+    }
+
+    pub fn alloc_unalign(&mut self, key: K, pos: I) -> Result<(), I> {
+        match self.id_pos.entry(key) {
+            Entry::Occupied(e) => Err(*e.get()),
+            Entry::Vacant(..) => {
+                self.id_pos.insert(key, pos);
+                self.id_neg.insert(pos, key);
+                Ok(())
             }
         }
     }
@@ -50,6 +66,14 @@ where
     pub fn cnt(&self) -> I {
         self.cnt
     }
+
+    pub fn ids(&self) -> impl Iterator<Item = &I> {
+        self.id_neg.keys()
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
+        self.id_pos.keys()
+    }
 }
 
 // Value ID
@@ -63,7 +87,7 @@ pub type BId = usize;
 pub type CFGGraph = HashMap<BId, Vec<BId>>;
 
 // TODO: We can do cache there.
-pub fn build_cfg(
+pub fn build_cfg_both(
     data: &koopa::ir::FunctionData,
     id_alloc: &mut IDAllocator<BasicBlock, BId>,
 ) -> (CFGGraph, CFGGraph) {
@@ -72,20 +96,20 @@ pub fn build_cfg(
     // reverse graph
     let mut prece = CFGGraph::new();
     for (&bb, node) in data.layout().bbs().iter() {
-        let id = id_alloc.check_or_alloca(bb);
+        let id = id_alloc.check_or_alloc(bb);
         let &val = node.insts().back_key().unwrap();
         prece.entry(id).or_default();
         let val_data = data.dfg().value(val);
         match val_data.kind() {
             ValueKind::Jump(jump) => {
-                let j_id = id_alloc.check_or_alloca(jump.target());
+                let j_id = id_alloc.check_or_alloc(jump.target());
                 graph.entry(id).or_default().push(j_id);
 
                 prece.entry(j_id).or_default().push(id);
             }
             ValueKind::Branch(branch) => {
-                let t_id = id_alloc.check_or_alloca(branch.true_bb());
-                let f_id = id_alloc.check_or_alloca(branch.false_bb());
+                let t_id = id_alloc.check_or_alloc(branch.true_bb());
+                let f_id = id_alloc.check_or_alloc(branch.false_bb());
                 graph.entry(id).or_default().push(t_id);
                 graph.entry(id).or_default().push(f_id);
 
@@ -100,6 +124,57 @@ pub fn build_cfg(
         }
     }
     (graph, prece)
+}
+
+pub fn build_cfg_forward(
+    data: &koopa::ir::FunctionData,
+    id_alloc: &mut IDAllocator<BasicBlock, BId>,
+) -> CFGGraph {
+    // <a,b> in set E when a can directly jump to b
+    let mut graph = CFGGraph::new();
+    for (&bb, node) in data.layout().bbs().iter() {
+        let id = id_alloc.check_or_alloc(bb);
+        let &val = node.insts().back_key().unwrap();
+        let val_data = data.dfg().value(val);
+        match val_data.kind() {
+            ValueKind::Jump(jump) => {
+                let j_id = id_alloc.check_or_alloc(jump.target());
+                graph.entry(id).or_default().push(j_id);
+            }
+            ValueKind::Branch(branch) => {
+                let t_id = id_alloc.check_or_alloc(branch.true_bb());
+                let f_id = id_alloc.check_or_alloc(branch.false_bb());
+                graph.entry(id).or_default().push(t_id);
+                graph.entry(id).or_default().push(f_id);
+            }
+            ValueKind::Return(_) => {
+                graph.entry(id).or_default();
+            }
+            // every basic block is end with three instructions above.
+            _ => unreachable!(),
+        }
+    }
+    graph
+}
+
+type GPath = Vec<BId>;
+type Set = HashSet<BId>;
+
+pub fn rpo_path(g: &CFGGraph) -> GPath {
+    let mut path = Vec::new();
+    let mut visited = Set::new();
+    fn dfs(node: usize, g: &CFGGraph, ans: &mut GPath, visited: &mut Set) {
+        visited.insert(node);
+        for &succ in g[&node].iter() {
+            if !visited.contains(&succ) {
+                dfs(succ, g, ans, visited);
+            }
+        }
+        ans.push(node);
+    }
+    dfs(0, g, &mut path, &mut visited);
+    path.reverse();
+    path
 }
 
 #[inline]

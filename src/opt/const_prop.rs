@@ -56,12 +56,12 @@ impl ValueStatusMap {
     fn new() -> ValueStatusMap {
         Self {
             status: Vec::new(),
-            var_allocator: IDAllocator::new(),
+            var_allocator: IDAllocator::new(1),
         }
     }
 
     fn insert(&mut self, val: Value, status: VariableStatus) {
-        let id = self.var_allocator.check_or_alloca(val);
+        let id = self.var_allocator.check_or_alloc(val);
         // must be a new value that did not appear before
         assert!(id == self.status.len());
         self.status.push(status);
@@ -75,7 +75,7 @@ impl ValueStatusMap {
 
     #[must_use]
     fn insert_or_merge(&mut self, val: Value, status: VariableStatus) -> bool {
-        let id = self.var_allocator.check_or_alloca(val);
+        let id = self.var_allocator.check_or_alloc(val);
         if id < self.status.len() {
             self.merge(val, status)
         } else {
@@ -123,8 +123,8 @@ impl FunctionPass for SparseConditionConstantPropagation {
         let Some(entry_bb) = data.layout().entry_bb() else {
             return;
         };
-        let mut bb_allocator: IDAllocator<BasicBlock, BId> = IDAllocator::new();
-        bb_allocator.check_or_alloca(entry_bb);
+        let mut bb_allocator: IDAllocator<BasicBlock, BId> = IDAllocator::new(1);
+        bb_allocator.check_or_alloc(entry_bb);
 
         let mut edge_visited = EdgeSet::new();
         let mut vertex_visited = HashSet::new();
@@ -297,18 +297,30 @@ impl FunctionPass for SparseConditionConstantPropagation {
                         .params_mut()
                         .retain(|&x| x != param);
                 }
-                let args = match data.dfg_mut().value_mut(jump_inst).kind_mut() {
-                    ValueKind::Jump(jump) => jump.args_mut(),
+                match data.dfg().value(jump_inst).kind() {
+                    ValueKind::Jump(jump) => {
+                        let target_bb = jump.target();
+                        data.dfg_mut().replace_value_with(jump_inst).jump(target_bb);
+                    }
                     ValueKind::Branch(branch) => {
                         if branch.true_bb() == bb {
-                            branch.true_args_mut()
+                            let false_args = branch.false_args().to_vec();
+                            let false_bb = branch.false_bb();
+                            let cond = branch.cond();
+                            data.dfg_mut()
+                                .replace_value_with(jump_inst)
+                                .branch_with_args(cond, bb, false_bb, vec![], false_args);
                         } else {
-                            branch.false_args_mut()
+                            let true_args = branch.true_args().to_vec();
+                            let true_bb = branch.true_bb();
+                            let cond = branch.cond();
+                            data.dfg_mut()
+                                .replace_value_with(jump_inst)
+                                .branch_with_args(cond, true_bb, bb, true_args, vec![]);
                         }
                     }
                     _ => unreachable!(),
-                };
-                args.clear();
+                }
             }
         }
     }
@@ -413,7 +425,7 @@ fn process_instruction(
                     }
                     flow_worklist.push_back((
                         bb_allocator.get_id(data.layout().parent_bb(inst).unwrap()),
-                        bb_allocator.check_or_alloca(target_bb),
+                        bb_allocator.check_or_alloc(target_bb),
                     ));
                 }
                 Some(influenced)
@@ -429,7 +441,7 @@ fn process_instruction(
                 }
                 flow_worklist.push_back((
                     bb_allocator.get_id(data.layout().parent_bb(inst).unwrap()),
-                    bb_allocator.check_or_alloca(jump.target()),
+                    bb_allocator.check_or_alloc(jump.target()),
                 ));
                 Some(influenced)
             }
