@@ -6,7 +6,9 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 #[allow(non_camel_case_types)]
 #[allow(unused)]
-#[derive(Debug, Eq, PartialEq, TryFromPrimitive, IntoPrimitive, Clone, Copy)]
+#[derive(
+    Debug, Eq, PartialEq, TryFromPrimitive, IntoPrimitive, Clone, Copy, PartialOrd, Ord, Hash,
+)]
 #[repr(u8)]
 /// Enum representing RISC-V registers.
 /// Each variant corresponds to a physical register in the RISC-V architecture.
@@ -20,19 +22,22 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 /// - s0-s11: Saved registers
 /// - a0-a7: Function arguments / return values
 pub enum Register {
-    zero, // 0
-    ra,   // 1
-    sp,   // 2
-    gp,   // 3
-    tp,   // 4
-    t0,   // 5
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    t0,
     t1,
     t2,
     t3,
     t4,
     t5,
     t6,
-    s0, // 12
+    s0,
     s1,
     s2,
     s3,
@@ -44,15 +49,19 @@ pub enum Register {
     s9,
     s10,
     s11,
-    a0, // 24
-    a1,
-    a2,
-    a3,
-    a4,
-    a5,
-    a6,
-    a7,
+    zero,
+    ra,
+    sp,
+    gp,
+    tp,
 }
+
+#[allow(unused)]
+pub const A0_BASE: u8 = 0;
+#[allow(unused)]
+pub const T0_BASE: u8 = 8;
+#[allow(unused)]
+pub const S0_BASE: u8 = 15;
 
 impl Register {
     #[inline]
@@ -65,6 +74,18 @@ impl Register {
     fn is_arg(&self) -> bool {
         use Register::*;
         matches!(self, a0 | a1 | a2 | a3 | a4 | a5 | a6 | a7)
+    }
+
+    fn arguments(index: usize) -> Register {
+        use Register::*;
+        assert!(index < 8);
+        [a0, a1, a2, a3, a4, a5, a6, a7][index]
+    }
+
+    fn temporary(index: usize) -> Register {
+        use Register::*;
+        assert!(index < 7);
+        [t0, t1, t2, t3, t4, t5, t6][index]
     }
 }
 
@@ -361,10 +382,9 @@ macro_rules! import_reg_and_inst {
     };
 }
 const SHIFT_WIDTH: usize = 2;
-const TEMP_BASE_U8_REPR: u8 = 5;
 
 pub struct RegisterManager {
-    temp_usage: u8,
+    temp_usage: usize,
     pool: Vec<Register>,
 }
 
@@ -378,7 +398,7 @@ impl RegisterManager {
 
     #[inline]
     fn alloc_temp(&mut self) -> Register {
-        let ret = (TEMP_BASE_U8_REPR + self.temp_usage).try_into().unwrap();
+        let ret = Register::temporary(self.temp_usage);
         self.temp_incr();
         self.pool.push(ret);
         ret
@@ -391,7 +411,7 @@ impl RegisterManager {
 
     #[inline]
     fn temp_incr(&mut self) {
-        debug_assert!(self.temp_usage < 7, "run out of tempoprary register");
+        debug_assert!(self.temp_usage < 7, "run out of temporary register");
         self.temp_usage += 1;
     }
 
