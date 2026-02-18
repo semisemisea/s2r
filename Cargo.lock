@@ -542,6 +542,8 @@ name = "sysy2riscv"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "itertools",
+ "key-node-list",
  "koopa",
  "lalrpop",
  "lalrpop-util",
