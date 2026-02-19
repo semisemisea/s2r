@@ -5,9 +5,11 @@ use std::{
     ops::RangeInclusive,
 };
 
-use koopa::ir::{FunctionData, Program, ValueKind};
+use itertools::Itertools;
+use koopa::ir::{Function, FunctionData, Program, Value, ValueKind};
 
 use crate::{
+    ir2riscv::inst_size,
     opt::utils::{self, IDAllocator, VIDAlloc},
     riscv_utils::{A0_BASE, Register},
 };
@@ -68,21 +70,50 @@ impl VirtualRegister {
     }
 }
 
-pub fn liveness_analysis(program: &Program) {
-    for (&_func, data) in program.funcs() {
-        if data.layout().entry_bb().is_none() {
-            continue;
-        }
-        func_liveness_analysis(data);
-    }
+#[derive(Debug)]
+pub enum AllocationState {
+    Register(Register),
+    Stack(usize),
 }
 
-fn func_liveness_analysis(data: &FunctionData) {
+pub struct RegisterAllocationResult {
+    pub allocation: RegisterAllocation,
+    pub insts_size: usize,
+    pub call_ra: bool,
+    pub extra_args: usize,
+}
+
+// pub fn program_liveness_analysis(
+//     program: &mut Program,
+// ) -> HashMap<Function, HashMap<Value, AllocationState>> {
+//     let mut program_allocation = HashMap::new();
+//     for (&func, data) in program.funcs_mut() {
+//         if data.layout().entry_bb().is_none() {
+//             continue;
+//         }
+//         let register_allocation = loop {
+//             if let Some(reg_alloc) = liveness_analysis(data) {
+//                 break reg_alloc;
+//             }
+//         };
+//         program_allocation.insert(func, register_allocation);
+//     }
+//     program_allocation
+// }
+
+type RegisterAllocation = HashMap<Value, AllocationState>;
+
+const REGISTER_COUNT: usize = 15;
+
+pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
     let mut bb_alloc = IDAllocator::new(1);
     let mut val_alloc: VIDAlloc = IDAllocator::new(4);
     let graph = utils::build_cfg_forward(data, &mut bb_alloc);
     let rpo_path = utils::rpo_path(&graph);
-    let mut register_manager = VirtualRegister::new(15);
+    let mut register_manager = VirtualRegister::new(REGISTER_COUNT);
+
+    let mut call_ra = false;
+    let mut extra_args = 0usize;
 
     for &fparam in data.params() {
         val_alloc.check_or_alloc(fparam);
@@ -100,11 +131,13 @@ fn func_liveness_analysis(data: &FunctionData) {
             let id = val_alloc.check_or_alloc(inst);
 
             if let ValueKind::Call(call) = data.dfg().value(inst).kind() {
+                call_ra = true;
+                extra_args = 8.max(call.args().len()) - 8;
                 for index in 0..8.min(call.args().len()) {
-                    register_manager.add_rule(
-                        Reverse((A0_BASE + index as u8).try_into().unwrap()),
-                        id..=id,
-                    );
+                    register_manager.add_rule(Reverse(Register::arguments(index)), id..=id);
+                }
+                for index in 0..7 {
+                    register_manager.add_rule(Reverse(Register::temporary(index)), id..=id);
                 }
             }
         }
@@ -143,26 +176,65 @@ fn func_liveness_analysis(data: &FunctionData) {
     }
 
     let unhandled = {
-        let mut unhandled = liveness_ranges.keys().cloned().collect::<Vec<_>>();
-        unhandled
-            .sort_unstable_by_key(|x| (*liveness_ranges[x].start(), *liveness_ranges[x].end()));
-        unhandled.into_iter()
+        let mut unsorted = liveness_ranges.keys().cloned().collect::<Vec<_>>();
+        unsorted.sort_unstable_by_key(|x| (*liveness_ranges[x].start(), *liveness_ranges[x].end()));
+        unsorted.into_iter()
     };
 
     let mut register_allocation = HashMap::new();
+    let mut curr_inst_offset = 0usize;
 
-    let mut active: VecDeque<(std::ops::RangeInclusive<usize>, VRegister)> = VecDeque::new();
+    let mut active: Vec<(std::ops::RangeInclusive<usize>, VRegister, Value)> =
+        Vec::with_capacity(REGISTER_COUNT);
     for val in unhandled {
         let new_range = liveness_ranges.get(&val).unwrap();
-        while let Some((old_range, reg)) = active.front()
-            && old_range.end() <= new_range.start()
-        {
-            register_manager.free(*reg);
-            active.pop_front();
+        let remove_partition =
+            active.partition_point(|(range, _reg, _val)| range.end() < new_range.start());
+        for (_, reg, _) in active.drain(0..remove_partition) {
+            register_manager.free(reg);
         }
-        let alloc = register_manager.alloc(new_range).unwrap();
-        active.push_back((new_range.clone(), alloc));
-        register_allocation.insert(val, alloc.0);
+
+        macro_rules! active_insert {
+            ($new_range:expr, $register:expr, $value: expr) => {
+                let insert_idx =
+                    active.partition_point(|(range, _reg, _val)| range.end() <= $new_range.end());
+                active.insert(insert_idx, ($new_range.clone(), $register, $value));
+            };
+        }
+
+        macro_rules! alloc_stack {
+            ($val: expr) => {
+                register_allocation.insert($val, AllocationState::Stack(curr_inst_offset));
+                curr_inst_offset += inst_size(data, $val);
+            };
+        }
+
+        if let Some(alloc) = register_manager.alloc(new_range) {
+            active_insert!(new_range, alloc, val);
+            register_allocation.insert(val, AllocationState::Register(alloc.0));
+        } else {
+            eprintln!("Spill!");
+            if let Some((index, (occupied_range, occupied_reg, occupied_val))) = active
+                .iter()
+                .rev()
+                .find_position(|&&(_, reg, _)| register_manager.check(reg, new_range))
+            {
+                if occupied_range.end() > new_range.end() {
+                    // spill the occupied one
+                    alloc_stack!(*occupied_val);
+                    register_allocation.insert(val, AllocationState::Register(occupied_reg.0));
+                    let alloc_reg = *occupied_reg;
+                    active.remove(index);
+                    active_insert!(new_range, alloc_reg, val);
+                } else {
+                    // spill the current one
+                    alloc_stack!(val);
+                }
+            } else {
+                // spill the current one
+                alloc_stack!(val);
+            }
+        }
     }
 
     eprintln!("function name:{:?}", data.name());
@@ -178,6 +250,14 @@ fn func_liveness_analysis(data: &FunctionData) {
     }
 
     eprintln!("--------------------------------");
+
+    RegisterAllocationResult {
+        allocation: register_allocation,
+        insts_size: curr_inst_offset,
+        call_ra,
+        extra_args,
+    }
+    // Some(register_allocation)
 }
 
 // TODO:
