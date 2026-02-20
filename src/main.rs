@@ -11,7 +11,7 @@ mod register_alloc;
 mod riscv_utils;
 
 const SSA_ENABLE: bool = true;
-const SCCP_ENABLE: bool = false;
+const SCCP_ENABLE: bool = true;
 const DCE_ENABLE: bool = true;
 
 use crate::{
@@ -44,6 +44,8 @@ fn main() -> std::io::Result<()> {
     let mut pass_manager = PassManager::new();
 
     if SSA_ENABLE {
+        let ubb = opt::dce::UnreachableBasicBlock;
+        pass_manager.register(Pass::Function(Box::new(ubb)));
         let ssa = opt::ssa::SSATransform;
         pass_manager.register(Pass::Function(Box::new(ssa)));
     }
@@ -73,7 +75,7 @@ fn main() -> std::io::Result<()> {
 
     pass_manager.run_passes(&mut ir_ctx.program);
 
-    register_alloc::liveness_analysis(&ir_ctx.program);
+    // register_alloc::program_liveness_analysis(&mut ir_ctx.program);
 
     let mut g = koopa::back::KoopaGenerator::new(Vec::new());
     g.generate_on(&ir_ctx.end()).unwrap();
@@ -90,6 +92,9 @@ fn main() -> std::io::Result<()> {
     let useless_load = asm_opt::peekhole_load::PeekholeLoadElimination;
     asm_pass_manager.register(Box::new(useless_load));
 
+    let identical_move = asm_opt::identical_move::IdenticalMoveElimination;
+    asm_pass_manager.register(Box::new(identical_move));
+
     asm_pass_manager.run_passes(&mut insts);
     match mode.as_str() {
         "-koopa" => {
@@ -101,6 +106,9 @@ fn main() -> std::io::Result<()> {
         "test" => {
             std::fs::write("hello.koopa", ir_text)?;
             std::fs::write("hello.riscv", riscv_utils::end(insts))?;
+        }
+        "-perf" => {
+            std::fs::write(output.clone(), riscv_utils::end(insts))?;
         }
         invalid_mode => {
             eprintln!("Invalid output mode: {invalid_mode}");

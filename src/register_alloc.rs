@@ -1,17 +1,17 @@
 use std::{
     cmp::Reverse,
-    collections::{BinaryHeap, HashMap, VecDeque},
+    collections::{BinaryHeap, HashMap},
     fmt::Debug,
+    iter,
     ops::RangeInclusive,
 };
 
 use itertools::Itertools;
-use koopa::ir::{Function, FunctionData, Program, Value, ValueKind};
+use koopa::ir::{FunctionData, Value, ValueKind};
 
 use crate::{
-    ir2riscv::inst_size,
-    opt::utils::{self, IDAllocator, VIDAlloc},
-    riscv_utils::{A0_BASE, Register},
+    opt::utils::{self, IDAllocator, VIDAlloc, get_terminator_inst},
+    riscv_utils::Register,
 };
 
 type VRegister = Reverse<Register>;
@@ -20,6 +20,7 @@ type VRegister = Reverse<Register>;
 struct VirtualRegister {
     container: BinaryHeap<VRegister>,
     rules: HashMap<VRegister, Vec<RangeInclusive<usize>>>,
+    loops: Vec<RangeInclusive<usize>>,
 }
 
 fn is_ranges_intersect(lhs: &RangeInclusive<usize>, rhs: &RangeInclusive<usize>) -> bool {
@@ -66,7 +67,23 @@ impl VirtualRegister {
                 (0..max_size as u8).map(|x| Reverse(x.try_into().unwrap())),
             ),
             rules: HashMap::new(),
+            loops: Vec::new(),
         }
+    }
+
+    fn add_loop(&mut self, r#loop: RangeInclusive<usize>) {
+        self.loops.push(r#loop);
+    }
+
+    fn extent_by_loop(&self, range: RangeInclusive<usize>) -> RangeInclusive<usize> {
+        let max_end = self.loops.iter().fold(*range.end(), |end, loop_range| {
+            if range.contains(loop_range.start()) {
+                end.max(*loop_range.end())
+            } else {
+                end
+            }
+        });
+        *range.start()..=max_end
     }
 }
 
@@ -78,32 +95,14 @@ pub enum AllocationState {
 
 pub struct RegisterAllocationResult {
     pub allocation: RegisterAllocation,
-    pub insts_size: usize,
+    pub offset: usize,
     pub call_ra: bool,
     pub extra_args: usize,
 }
 
-// pub fn program_liveness_analysis(
-//     program: &mut Program,
-// ) -> HashMap<Function, HashMap<Value, AllocationState>> {
-//     let mut program_allocation = HashMap::new();
-//     for (&func, data) in program.funcs_mut() {
-//         if data.layout().entry_bb().is_none() {
-//             continue;
-//         }
-//         let register_allocation = loop {
-//             if let Some(reg_alloc) = liveness_analysis(data) {
-//                 break reg_alloc;
-//             }
-//         };
-//         program_allocation.insert(func, register_allocation);
-//     }
-//     program_allocation
-// }
+pub type RegisterAllocation = HashMap<Value, AllocationState>;
 
-type RegisterAllocation = HashMap<Value, AllocationState>;
-
-const REGISTER_COUNT: usize = 15;
+const REGISTER_COUNT: usize = 13;
 
 pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
     let mut bb_alloc = IDAllocator::new(1);
@@ -132,8 +131,8 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
 
             if let ValueKind::Call(call) = data.dfg().value(inst).kind() {
                 call_ra = true;
-                extra_args = 8.max(call.args().len()) - 8;
-                for index in 0..8.min(call.args().len()) {
+                extra_args = extra_args.max(8.max(call.args().len()) - 8);
+                for index in 0..8 {
                     register_manager.add_rule(Reverse(Register::arguments(index)), id..=id);
                 }
                 for index in 0..7 {
@@ -141,37 +140,92 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
                 }
             }
         }
+
+        let terminator_inst = get_terminator_inst(data, bb);
+
+        macro_rules! add_loop {
+            ($backedge_goes_to: expr) => {
+                if let Some(id) = bb_alloc.get_id_safe($backedge_goes_to) {
+                    let head_bb = bb_alloc.search_id(*id);
+                    let head_bb_first_inst = *data.dfg().bb(head_bb).params().first().unwrap_or(
+                        data.layout()
+                            .bbs()
+                            .node(&head_bb)
+                            .unwrap()
+                            .insts()
+                            .front_key()
+                            .unwrap(),
+                    );
+                    if let (Some(header_id), Some(latch_id)) = (
+                        val_alloc.get_id_safe(head_bb_first_inst),
+                        val_alloc.get_id_safe(terminator_inst),
+                    ) && header_id < latch_id
+                    {
+                        register_manager.add_loop(*header_id..=*latch_id);
+                    }
+                }
+            };
+        }
+        match data.dfg().value(terminator_inst).kind() {
+            ValueKind::Jump(jump) => {
+                add_loop!(jump.target());
+            }
+            ValueKind::Branch(branch) => {
+                add_loop!(branch.true_bb());
+                add_loop!(branch.false_bb());
+            }
+            ValueKind::Return(..) => {}
+            _ => unreachable!(),
+        }
     }
 
     let mut liveness_ranges = HashMap::new();
 
     macro_rules! insert_range {
-        ($inst:expr) => {
-            if let Some(max_id) = data
+        ($inst:expr, $min_id: expr) => {
+            let max_id = data
                 .dfg()
                 .value($inst)
                 .used_by()
                 .iter()
                 .filter_map(|&val| val_alloc.get_id_safe(val))
                 .max()
-            {
-                liveness_ranges.insert($inst, val_alloc.get_id($inst)..=*max_id);
-            }
+                .copied()
+                .unwrap_or($min_id);
+            let range = register_manager.extent_by_loop($min_id..=max_id);
+            eprintln!("insert range:{:?} {:?}", $inst, range);
+            liveness_ranges.insert($inst, range);
         };
     }
+    // val_alloc.get_id($inst)
 
-    for &fparam in data.params() {
-        insert_range!(fparam);
+    for &fparam in data.params().iter().take(8) {
+        insert_range!(fparam, val_alloc.get_id(fparam));
     }
-    for (&bb, node) in data.layout().bbs() {
-        let iter = data
+    for bb_id in rpo_path {
+        let bb = bb_alloc.search_id(bb_id);
+        let node = data.layout().bbs().node(&bb).unwrap();
+        eprintln!("params:{:?}", data.dfg().bb(bb).params());
+
+        if let Some(min_id) = data
             .dfg()
             .bb(bb)
-            .params()
+            .used_by()
             .iter()
-            .chain(node.insts().iter().map(|(val, _)| val));
-        for &inst in iter {
-            insert_range!(inst);
+            .map(|&val| val_alloc.get_id(val))
+            .min()
+        {
+            for &block_param in data.dfg().bb(bb).params() {
+                insert_range!(block_param, min_id);
+            }
+        }
+        for &inst in node
+            .insts()
+            .iter()
+            .map(|(val, _)| val)
+            .filter(|&&val| can_produce_value(val, data))
+        {
+            insert_range!(inst, val_alloc.get_id(inst));
         }
     }
 
@@ -182,7 +236,7 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
     };
 
     let mut register_allocation = HashMap::new();
-    let mut curr_inst_offset = 0usize;
+    let mut curr_inst_offset = extra_args * 4;
 
     let mut active: Vec<(std::ops::RangeInclusive<usize>, VRegister, Value)> =
         Vec::with_capacity(REGISTER_COUNT);
@@ -205,8 +259,13 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
         macro_rules! alloc_stack {
             ($val: expr) => {
                 register_allocation.insert($val, AllocationState::Stack(curr_inst_offset));
-                curr_inst_offset += inst_size(data, $val);
+                curr_inst_offset += crate::ir2riscv::inst_size(data, $val);
             };
+        }
+
+        if let ValueKind::Alloc(alloc) = data.dfg().value(val).kind() {
+            alloc_stack!(val);
+            continue;
         }
 
         if let Some(alloc) = register_manager.alloc(new_range) {
@@ -224,7 +283,8 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
                     alloc_stack!(*occupied_val);
                     register_allocation.insert(val, AllocationState::Register(occupied_reg.0));
                     let alloc_reg = *occupied_reg;
-                    active.remove(index);
+                    let actual_index = active.len() - index - 1;
+                    active.remove(actual_index);
                     active_insert!(new_range, alloc_reg, val);
                 } else {
                     // spill the current one
@@ -237,6 +297,20 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
         }
     }
 
+    curr_inst_offset -= extra_args * 4;
+
+    let offset = {
+        let unaligned = curr_inst_offset + if call_ra { 4 } else { 0 } + extra_args * 4;
+        if unaligned & 0x0F != 0 {
+            (unaligned | 0x0F) + 1
+        } else {
+            unaligned
+        }
+    };
+
+    for (index, &fparam) in data.params().iter().skip(8).enumerate() {
+        register_allocation.insert(fparam, AllocationState::Stack(offset + 4 * index));
+    }
     eprintln!("function name:{:?}", data.name());
 
     eprintln!("--------------------------------");
@@ -253,11 +327,24 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
 
     RegisterAllocationResult {
         allocation: register_allocation,
-        insts_size: curr_inst_offset,
+        offset,
         call_ra,
         extra_args,
     }
-    // Some(register_allocation)
+}
+
+fn can_produce_value(val: Value, data: &FunctionData) -> bool {
+    matches!(
+        data.dfg().value(val).kind(),
+        ValueKind::FuncArgRef(..)
+            | ValueKind::BlockArgRef(..)
+            | ValueKind::Alloc(..)
+            | ValueKind::Load(..)
+            | ValueKind::GetPtr(..)
+            | ValueKind::GetElemPtr(..)
+            | ValueKind::Binary(..)
+            | ValueKind::Call(..)
+    )
 }
 
 // TODO:

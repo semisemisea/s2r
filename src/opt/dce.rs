@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use koopa::{
     ir::{
         BasicBlock, Function, FunctionData, Program, Value, ValueKind,
-        builder::{BasicBlockBuilder, LocalInstBuilder},
+        builder::{BasicBlockBuilder, LocalInstBuilder, ValueBuilder},
         dfg,
         entities::ValueData,
     },
@@ -222,7 +222,8 @@ impl FunctionPass for DeadPhiElimination {
                 .collect::<Vec<_>>();
 
             for inst in jump_inst {
-                match data.dfg_mut().value_mut(inst).kind_mut() {
+                let mut jump_inst_copy_data = data.dfg().value(inst).clone();
+                match jump_inst_copy_data.kind_mut() {
                     ValueKind::Branch(branch) => {
                         let mut args_mut = if bb == branch.true_bb() {
                             branch.true_args_mut()
@@ -242,6 +243,9 @@ impl FunctionPass for DeadPhiElimination {
                     }
                     _ => unreachable!(),
                 }
+                data.dfg_mut()
+                    .replace_value_with(inst)
+                    .raw(jump_inst_copy_data);
             }
         }
     }

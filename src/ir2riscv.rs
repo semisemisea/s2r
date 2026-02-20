@@ -1,11 +1,14 @@
 use koopa::ir::{FunctionData, Program, TypeKind, Value, ValueKind, values};
 
-use crate::riscv_utils::{AsmGenContext, GenerateAsm};
+use crate::{
+    register_alloc::{self, AllocationState, RegisterAllocationResult},
+    riscv_utils::{AsmGenContext, GenerateAsm},
+};
 
 const AUTO_FUNC_ARG_ON_STACK: bool = true;
 
 #[inline]
-fn inst_size(func: &FunctionData, val: Value) -> usize {
+pub fn inst_size(func: &FunctionData, val: Value) -> usize {
     match func.dfg().value(val).kind() {
         ValueKind::Alloc(..) => ptr_size(func.dfg().value(val).ty()),
         _ => func.dfg().value(val).ty().size(),
@@ -17,24 +20,33 @@ impl GenerateAsm for FunctionData {
         ctx.writeln(&format!("{}:", self.name().strip_prefix("@").unwrap()));
         ctx.incr_indent();
 
-        // we first figure out how much the stack size should be.
-        let (inst_offset, call_ra, max_args) = self
-            .layout()
-            .bbs()
-            .iter()
-            .flat_map(|(&bb, node)| self.dfg().bb(bb).params().iter().chain(node.insts().keys()))
-            .fold(
-                (0, false, 0),
-                |(mut inst_offset, mut call_ra, mut max_args), &inst| {
-                    inst_offset += inst_size(self, inst);
-                    if let ValueKind::Call(call) = self.dfg().value(inst).kind() {
-                        call_ra = true;
-                        max_args = max_args.max(call.args().len())
-                    }
+        let RegisterAllocationResult {
+            allocation,
+            offset,
+            call_ra,
+            extra_args,
+        } = register_alloc::liveness_analysis(ctx.curr_func_data(program));
 
-                    (inst_offset, call_ra, max_args)
-                },
-            );
+        *ctx.allocation_mut() = allocation;
+
+        // we first figure out how much the stack size should be.
+        // let (inst_offset, call_ra, max_args) = self
+        //     .layout()
+        //     .bbs()
+        //     .iter()
+        //     .flat_map(|(&bb, node)| self.dfg().bb(bb).params().iter().chain(node.insts().keys()))
+        //     .fold(
+        //         (0, false, 0),
+        //         |(mut inst_offset, mut call_ra, mut max_args), &inst| {
+        //             inst_offset += inst_size(self, inst);
+        //             if let ValueKind::Call(call) = self.dfg().value(inst).kind() {
+        //                 call_ra = true;
+        //                 max_args = max_args.max(call.args().len())
+        //             }
+        //
+        //             (inst_offset, call_ra, max_args)
+        //         },
+        //     );
 
         // #[cfg(debug_assertions)]
         // {
@@ -45,19 +57,28 @@ impl GenerateAsm for FunctionData {
         //     eprintln!();
         // }
 
-        let offset = inst_offset
-            + if call_ra { 4 } else { 0 }
-            + (max_args.max(8) - 8) * 4
-            + self.params().len() * 4;
-        // According to RISC-V, sp_offset should be aligned with 16.
-        let offset = if (offset & 0x0F) != 0 {
-            (offset + 0x0F) >> 4 << 4
-        } else {
-            offset
-        };
+        // let offset = {
+        //     let unaligned = insts_size + if call_ra { 4 } else { 0 } + extra_args * 4;
+        //     if unaligned & 0x0F != 0 {
+        //         (unaligned | 0x0F) + 1
+        //     } else {
+        //         unaligned
+        //     }
+        // };
+
+        // let offset = inst_offset
+        //     + if call_ra { 4 } else { 0 }
+        //     + (max_args.max(8) - 8) * 4
+        //     + self.params().len() * 4;
+        // // According to RISC-V, sp_offset should be aligned with 16.
+        // let offset = if (offset & 0x0F) != 0 {
+        //     (offset + 0x0F) >> 4 << 4
+        // } else {
+        //     offset
+        // };
         ctx.prologue(offset, call_ra);
 
-        let curr_offset = (max_args.max(8) - 8) * 4;
+        let curr_offset = (extra_args.max(8) - 8) * 4;
 
         let mut curr_offset = if AUTO_FUNC_ARG_ON_STACK {
             self.params()
@@ -174,8 +195,10 @@ impl GenerateAsm for values::GetPtr {
             // ctx.load_from_address();
             ctx.add_op();
         } else {
-            let pre_drifted_address = ctx.get_inst_offset(self.src()).unwrap();
-            ctx.load_word_sp(pre_drifted_address as _);
+            // let pre_drifted_address = ctx.get_inst_offset(self.src()).unwrap();
+            if let Some(pre_drifted_address) = ctx.register_or_offset(self.src()) {
+                ctx.load_word_sp(pre_drifted_address as _);
+            }
             ctx.add_op()
         }
 
@@ -219,13 +242,17 @@ impl GenerateAsm for values::GetElemPtr {
             // ctx.load_from_address();
             ctx.add_op();
         } else if ptr_flag {
-            let pre_drifted_address = ctx.get_inst_offset(self.src()).unwrap();
-            ctx.load_word_sp(pre_drifted_address as _);
+            // let pre_drifted_address = ctx.get_inst_offset(self.src()).unwrap();
+            if let Some(pre_drifted_address) = ctx.register_or_offset(self.src()) {
+                ctx.load_word_sp(pre_drifted_address as _);
+            }
             ctx.add_op()
         } else {
-            let rel_base_address = ctx.get_inst_offset(self.src()).unwrap();
+            // let rel_base_address = ctx.get_inst_offset(self.src()).unwrap();
+            if let Some(rel_base_address) = ctx.register_or_offset(self.src()) {
+                ctx.load_imm(rel_base_address as _);
+            }
             // add to the base_address
-            ctx.load_imm(rel_base_address as _);
             ctx.add_op();
             // We are calculating relative offset. Add sp to make it absolute
             ctx.add_sp();
@@ -323,6 +350,7 @@ impl GenerateAsm for values::Branch {
         true_args_and_params
             .chain(false_args_and_params)
             .for_each(|(&arg, &param)| {
+                eprint!("params:");
                 ctx.load_to_register(program, arg);
                 ctx.save_word_at_inst(param);
             });
@@ -393,13 +421,17 @@ impl GenerateAsm for values::Load {
             ctx.load_from_address();
             ctx.save_word_at_curr_inst();
         } else if ptr_flag {
-            let offset = ctx.get_inst_offset(self.src()).unwrap() as i32;
-            ctx.load_word_sp(offset);
+            // let offset = ctx.get_inst_offset(self.src()).unwrap() as i32;
+            if let Some(offset) = ctx.register_or_offset(self.src()) {
+                ctx.load_word_sp(offset as _);
+            }
             ctx.load_from_address();
             ctx.save_word_at_curr_inst();
         } else {
-            let offset = ctx.get_inst_offset(self.src()).unwrap() as i32;
-            ctx.load_word_sp(offset);
+            // let offset = ctx.get_inst_offset(self.src()).unwrap() as i32;
+            if let Some(offset) = ctx.register_or_offset(self.src()) {
+                ctx.load_word_sp(offset as _);
+            }
             ctx.save_word_at_curr_inst();
         }
         Ok(())

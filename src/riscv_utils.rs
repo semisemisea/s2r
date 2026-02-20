@@ -4,6 +4,8 @@ use key_node_list::KeyValueList;
 use koopa::ir::{BasicBlock, BinaryOp, Function, FunctionData, Program, Type, Value, ValueKind};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
+use crate::register_alloc::{AllocationState, RegisterAllocation};
+
 #[allow(non_camel_case_types)]
 #[allow(unused)]
 #[derive(
@@ -35,8 +37,6 @@ pub enum Register {
     t2,
     t3,
     t4,
-    t5,
-    t6,
     s0,
     s1,
     s2,
@@ -49,6 +49,8 @@ pub enum Register {
     s9,
     s10,
     s11,
+    t5,
+    t6,
     zero,
     ra,
     sp,
@@ -76,16 +78,16 @@ impl Register {
         matches!(self, a0 | a1 | a2 | a3 | a4 | a5 | a6 | a7)
     }
 
-    fn arguments(index: usize) -> Register {
+    pub fn arguments(index: usize) -> Register {
         use Register::*;
         assert!(index < 8);
         [a0, a1, a2, a3, a4, a5, a6, a7][index]
     }
 
-    fn temporary(index: usize) -> Register {
+    pub fn temporary(index: usize) -> Register {
         use Register::*;
-        assert!(index < 7);
-        [t0, t1, t2, t3, t4, t5, t6][index]
+        // assert!(index < 7);
+        *[t0, t1, t2, t3, t4, t5, t6].get(index).unwrap_or(&zero)
     }
 }
 
@@ -316,6 +318,7 @@ pub enum RiscvInst {
         callee: String,
     },
     _string {
+        indent_level: usize,
         str: String,
     },
 }
@@ -363,7 +366,12 @@ impl std::fmt::Display for RiscvInst {
             RiscvInst::beqz { rs, label } => write!(f, "beqz  {}, {}", rs, label),
             RiscvInst::bnez { rs, label } => write!(f, "bnez  {}, {}", rs, label),
             RiscvInst::call { callee } => write!(f, "call  {}", callee),
-            RiscvInst::_string { str } => write!(f, "{}", str),
+            RiscvInst::_string { str, indent_level } => {
+                for _ in 0..*indent_level {
+                    write!(f, " ")?
+                }
+                write!(f, "{}", str)
+            }
         }
     }
 }
@@ -391,9 +399,23 @@ pub struct RegisterManager {
 impl RegisterManager {
     fn new() -> RegisterManager {
         RegisterManager {
-            temp_usage: 0,
+            // only using t5 and t6
+            temp_usage: 5,
             pool: Vec::with_capacity(16),
         }
+    }
+
+    #[inline]
+    fn push_register(&mut self, register: Register) {
+        self.pool.push(register)
+    }
+
+    fn take_register(&mut self) -> Register {
+        let ret = self.pool.pop().unwrap();
+        if matches!(ret, Register::t5 | Register::t6 | Register::zero) {
+            self.temp_usage -= 1;
+        }
+        ret
     }
 
     #[inline]
@@ -411,7 +433,7 @@ impl RegisterManager {
 
     #[inline]
     fn temp_incr(&mut self) {
-        debug_assert!(self.temp_usage < 7, "run out of temporary register");
+        // debug_assert!(self.temp_usage < 7, "run out of temporary register");
         self.temp_usage += 1;
     }
 
@@ -420,13 +442,13 @@ impl RegisterManager {
         self.temp_usage -= 1;
     }
 
-    fn take_reg(&mut self) -> Register {
-        let ret = self.pool.pop().unwrap();
-        if ret.is_temp() {
-            self.temp_decr();
-        }
-        ret
-    }
+    // fn take_register(&mut self) -> Register {
+    //     let ret = self.pool.pop().unwrap();
+    //     if ret.is_temp() {
+    //         self.temp_decr();
+    //     }
+    //     ret
+    // }
 }
 
 pub type List = KeyValueList<usize, RiscvInst>;
@@ -442,6 +464,7 @@ pub struct AsmGenContext {
     reg_pool: RegisterManager,
     curr_inst: Option<Value>,
     epilogue_stack: Vec<Epilogue>,
+    allocation: RegisterAllocation,
 }
 
 pub trait GenerateAsm {
@@ -465,6 +488,7 @@ impl AsmGenContext {
             reg_pool: RegisterManager::new(),
             curr_inst: None,
             epilogue_stack: Vec::new(),
+            allocation: RegisterAllocation::new(),
         }
     }
 
@@ -500,6 +524,20 @@ impl AsmGenContext {
     pub fn get_inst_offset(&self, val: Value) -> Option<usize> {
         self.stack_slots.get(&val).copied()
     }
+
+    pub fn register_or_offset(&mut self, val: Value) -> Option<usize> {
+        match self.allocation.get(&val).unwrap() {
+            AllocationState::Register(register) => {
+                self.reg_pool.push_register(*register);
+                None
+            }
+            AllocationState::Stack(offset) => Some(*offset),
+        }
+    }
+
+    // pub fn get_val_storage(&self, val: Value) -> Option<AllocationState> {
+    //     todo!()
+    // }
 
     pub fn generate(mut self, program: &Program) -> anyhow::Result<List> {
         // Target platform is 32bit.
@@ -594,6 +632,7 @@ impl AsmGenContext {
             self.inst_list,
             RiscvInst::_string {
                 str: string.to_string(),
+                indent_level: self.indent_level,
             }
         );
     }
@@ -606,7 +645,9 @@ impl AsmGenContext {
         use Register::{ra, sp};
         let offset = offset as i32;
 
-        self.add_imm(sp, -offset, sp);
+        if offset != 0 {
+            self.add_imm(sp, -offset, sp);
+        }
 
         if call_ra {
             self.save_word(ra, offset - 4, sp);
@@ -656,10 +697,12 @@ impl AsmGenContext {
             //     let reg = (a0 as u8 + arg_ref.index() as u8).try_into().unwrap();
             //     self.alloc_para_reg(reg);
             // }
-            _ if !data.ty().is_unit() => {
-                let offset = self.get_inst_offset(val).unwrap() as i32;
-                self.load_word(reg, offset, sp);
-            }
+            _ if !data.ty().is_unit() => match self.allocation.get(&val).unwrap() {
+                AllocationState::Register(register) => self.mv(*register, reg),
+                AllocationState::Stack(offset) => {
+                    self.load_word(reg, *offset as _, sp);
+                }
+            },
             _ => (),
         }
     }
@@ -696,8 +739,16 @@ impl AsmGenContext {
                     //     val,
                     //     self.curr_func_data(program).dfg().value(val).kind()
                     // );
-                    let offset = self.get_inst_offset(val).unwrap() as i32;
-                    self.load_word_sp(offset);
+                    match self.allocation.get(&val).unwrap() {
+                        AllocationState::Register(register) => {
+                            self.reg_pool.push_register(*register)
+                        }
+                        AllocationState::Stack(offset) => {
+                            self.load_word_sp(*offset as _);
+                        }
+                    }
+                    // let offset = self.get_inst_offset(val).unwrap() as i32;
+                    // self.load_word_sp(offset);
                 }
                 _ => (),
             }
@@ -723,8 +774,8 @@ impl AsmGenContext {
 
     pub fn multiply(&mut self) {
         import_reg_and_inst!();
-        let rhs = self.reg_pool.take_reg();
-        let lhs = self.reg_pool.take_reg();
+        let rhs = self.reg_pool.take_register();
+        let lhs = self.reg_pool.take_register();
         let ans = self.reg_pool.alloc_temp();
         self.write_inst(mul {
             rd: ans,
@@ -735,8 +786,8 @@ impl AsmGenContext {
 
     pub fn add_op(&mut self) {
         import_reg_and_inst!();
-        let rhs = self.reg_pool.take_reg();
-        let lhs = self.reg_pool.take_reg();
+        let rhs = self.reg_pool.take_register();
+        let lhs = self.reg_pool.take_register();
         let ans = self.reg_pool.alloc_temp();
         self.write_inst(add {
             rd: ans,
@@ -747,7 +798,7 @@ impl AsmGenContext {
 
     pub fn add_sp(&mut self) {
         import_reg_and_inst!();
-        let rhs = self.reg_pool.take_reg();
+        let rhs = self.reg_pool.take_register();
         let ans = self.reg_pool.alloc_temp();
         self.write_inst(add {
             rd: ans,
@@ -759,6 +810,14 @@ impl AsmGenContext {
     pub fn add(&mut self, rd: Register, rs1: Register, rs2: Register) {
         import_reg_and_inst!();
         self.write_inst(add { rd, rs1, rs2 });
+    }
+
+    pub fn allocation_mut(&mut self) -> &mut RegisterAllocation {
+        &mut self.allocation
+    }
+
+    pub fn curr_inst(&self) -> Option<Value> {
+        self.curr_inst
     }
 }
 
@@ -777,10 +836,12 @@ impl Epilogue {
 
     pub fn finish(&self, ctx: &mut AsmGenContext) {
         import_reg_and_inst!();
-        if self.call_ra {
-            ctx.load_word(ra, self.offset - 4, sp);
+        if self.offset != 0 {
+            if self.call_ra {
+                ctx.load_word(ra, self.offset - 4, sp);
+            }
+            ctx.add_imm(sp, self.offset, sp);
         }
-        ctx.add_imm(sp, self.offset, sp);
         ctx.write_inst(ret);
     }
 }
@@ -808,14 +869,19 @@ impl AsmGenContext {
     }
 
     pub fn save_word_at_curr_inst(&mut self) {
-        let curr_inst = self.curr_inst.unwrap();
-        let offset = self.get_inst_offset(curr_inst).unwrap() as i32;
-        self.save_word_with_offset(offset);
+        self.save_word_at_inst(self.curr_inst.unwrap());
     }
 
     pub fn save_word_at_inst(&mut self, val: Value) {
-        let offset = self.get_inst_offset(val).unwrap() as i32;
-        self.save_word_with_offset(offset);
+        match self.allocation.get(&val).unwrap() {
+            AllocationState::Register(register) => {
+                let source = self.reg_pool.take_register();
+                self.mv(source, *register)
+            }
+            AllocationState::Stack(offset) => {
+                self.save_word_with_offset(*offset as _);
+            }
+        }
     }
 
     pub fn save_word(&mut self, rs2: Register, imm: i32, rs1: Register) {
@@ -828,7 +894,7 @@ impl AsmGenContext {
             });
         } else {
             self.load_imm(imm);
-            let imm_reg = self.reg_pool.take_reg();
+            let imm_reg = self.reg_pool.take_register();
             self.add(imm_reg, rs1, imm_reg);
             self.write_inst(sw {
                 rs2,
@@ -842,7 +908,7 @@ impl AsmGenContext {
     pub fn save_word_with_offset(&mut self, offset: i32) {
         import_reg_and_inst!();
         if (-2048..2048).contains(&offset) {
-            let temp_reg = self.reg_pool.take_reg();
+            let temp_reg = self.reg_pool.take_register();
             self.write_inst(sw {
                 rs2: temp_reg,
                 imm12: offset,
@@ -851,8 +917,8 @@ impl AsmGenContext {
         } else {
             self.load_imm(offset);
             self.add_sp();
-            let add_temp = self.reg_pool.take_reg();
-            let temp_reg = self.reg_pool.take_reg();
+            let add_temp = self.reg_pool.take_register();
+            let temp_reg = self.reg_pool.take_register();
             self.write_inst(sw {
                 rs2: temp_reg,
                 imm12: 0,
@@ -864,8 +930,8 @@ impl AsmGenContext {
     #[inline]
     pub fn save_word_at_address(&mut self) {
         import_reg_and_inst!();
-        let val_reg = self.reg_pool.take_reg();
-        let address_reg = self.reg_pool.take_reg();
+        let val_reg = self.reg_pool.take_register();
+        let address_reg = self.reg_pool.take_register();
         self.write_inst(sw {
             rs2: val_reg,
             imm12: 0,
@@ -884,7 +950,7 @@ impl AsmGenContext {
         } else {
             self.load_imm(offset);
             self.add_sp();
-            let add_temp = self.reg_pool.take_reg();
+            let add_temp = self.reg_pool.take_register();
             self.write_inst(lw {
                 rd,
                 imm12: 0,
@@ -899,7 +965,7 @@ impl AsmGenContext {
             self.write_inst(addi { rd, rs, imm12: imm })
         } else {
             self.load_imm(imm);
-            let imm_reg = self.reg_pool.take_reg();
+            let imm_reg = self.reg_pool.take_register();
             self.write_inst(add {
                 rd,
                 rs1: rs,
@@ -911,8 +977,25 @@ impl AsmGenContext {
     #[inline]
     pub fn load_word_sp(&mut self, offset: i32) {
         use Register::sp;
-        let temp_reg = self.reg_pool.alloc_temp();
-        self.load_word(temp_reg, offset, sp);
+        import_reg_and_inst!();
+        if (-2048..2048).contains(&offset) {
+            let temp_reg = self.reg_pool.alloc_temp();
+            self.write_inst(lw {
+                rd: temp_reg,
+                imm12: offset,
+                rs: sp,
+            });
+        } else {
+            self.load_imm(offset);
+            self.add_sp();
+            let add_temp = self.reg_pool.take_register();
+            let temp_reg = self.reg_pool.alloc_temp();
+            self.write_inst(lw {
+                rd: temp_reg,
+                imm12: 0,
+                rs: add_temp,
+            });
+        };
     }
 
     pub fn load_address(&mut self, label: String) {
@@ -926,7 +1009,7 @@ impl AsmGenContext {
 
     pub fn load_from_address(&mut self) {
         import_reg_and_inst!();
-        let address_reg = self.reg_pool.take_reg();
+        let address_reg = self.reg_pool.take_register();
         let value_reg = self.reg_pool.alloc_temp();
         self.write_inst(lw {
             rd: value_reg,
@@ -937,8 +1020,8 @@ impl AsmGenContext {
 
     pub fn binary_op(&mut self, op: BinaryOp) {
         import_reg_and_inst!();
-        let rhs = self.reg_pool.take_reg();
-        let lhs = self.reg_pool.take_reg();
+        let rhs = self.reg_pool.take_register();
+        let lhs = self.reg_pool.take_register();
         let res = self.reg_pool.alloc_temp();
         match op {
             BinaryOp::NotEq => {
@@ -1020,7 +1103,7 @@ impl AsmGenContext {
 
     pub fn ret(&mut self) {
         import_reg_and_inst!();
-        let source = self.reg_pool.take_reg();
+        let source = self.reg_pool.take_register();
         self.write_inst(mv { rd: a0, rs: source });
         self.epilogue_stack
             .last_mut()
@@ -1028,6 +1111,14 @@ impl AsmGenContext {
             .mark()
             .clone()
             .finish(self);
+    }
+
+    fn mv(&mut self, source: Register, dest: Register) {
+        import_reg_and_inst!();
+        self.write_inst(mv {
+            rd: dest,
+            rs: source,
+        });
     }
 
     pub fn void_ret(&mut self) {
@@ -1048,7 +1139,7 @@ impl AsmGenContext {
 
     pub fn if_jump(&mut self, true_bb: BasicBlock, false_bb: BasicBlock, program: &Program) {
         import_reg_and_inst!();
-        let cond_reg = self.reg_pool.take_reg();
+        let cond_reg = self.reg_pool.take_register();
         self.write_inst(bnez {
             rs: cond_reg,
             label: self.get_bb_name(true_bb, program),
