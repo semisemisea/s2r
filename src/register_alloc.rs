@@ -1,8 +1,7 @@
 use std::{
     cmp::Reverse,
-    collections::{BinaryHeap, HashMap},
+    collections::{BinaryHeap, HashMap, HashSet},
     fmt::Debug,
-    iter,
     ops::RangeInclusive,
 };
 
@@ -21,6 +20,7 @@ struct VirtualRegister {
     container: BinaryHeap<VRegister>,
     rules: HashMap<VRegister, Vec<RangeInclusive<usize>>>,
     loops: Vec<RangeInclusive<usize>>,
+    callee_used: HashSet<Register>,
 }
 
 fn is_ranges_intersect(lhs: &RangeInclusive<usize>, rhs: &RangeInclusive<usize>) -> bool {
@@ -32,6 +32,9 @@ impl VirtualRegister {
         let mut not_usable = Vec::new();
         while let Some(virtual_reg) = self.container.pop() {
             if self.check(virtual_reg, for_range) {
+                if virtual_reg.0.is_saved() {
+                    self.callee_used.insert(virtual_reg.0);
+                }
                 return Some(virtual_reg);
             }
             not_usable.push(virtual_reg);
@@ -68,6 +71,7 @@ impl VirtualRegister {
             ),
             rules: HashMap::new(),
             loops: Vec::new(),
+            callee_used: HashSet::new(),
         }
     }
 
@@ -98,16 +102,18 @@ pub struct RegisterAllocationResult {
     pub offset: usize,
     pub call_ra: bool,
     pub extra_args: usize,
+    pub callee_usage: HashSet<Register>,
 }
 
 pub type RegisterAllocation = HashMap<Value, AllocationState>;
 
-const REGISTER_COUNT: usize = 13;
+const REGISTER_COUNT: usize = 24;
 
 pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
     let mut bb_alloc = IDAllocator::new(1);
     let mut val_alloc: VIDAlloc = IDAllocator::new(4);
-    let graph = utils::build_cfg_forward(data, &mut bb_alloc);
+    // let graph = utils::build_cfg_forward(data, &mut bb_alloc);
+    let (graph, prece) = utils::build_cfg_both(data, &mut bb_alloc);
     let rpo_path = utils::rpo_path(&graph);
     let mut register_manager = VirtualRegister::new(REGISTER_COUNT);
 
@@ -126,6 +132,7 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
             .params()
             .iter()
             .chain(node.insts().iter().map(|(val, _)| val));
+
         for &inst in iter {
             let id = val_alloc.check_or_alloc(inst);
 
@@ -140,7 +147,10 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
                 }
             }
         }
+    }
 
+    for &bb_id in rpo_path.iter() {
+        let bb = bb_alloc.search_id(bb_id);
         let terminator_inst = get_terminator_inst(data, bb);
 
         macro_rules! add_loop {
@@ -156,16 +166,47 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
                             .front_key()
                             .unwrap(),
                     );
-                    if let (Some(header_id), Some(latch_id)) = (
+
+                    if let (Some(header_id), Some(latch_term_id)) = (
                         val_alloc.get_id_safe(head_bb_first_inst),
                         val_alloc.get_id_safe(terminator_inst),
-                    ) && header_id < latch_id
-                    {
-                        register_manager.add_loop(*header_id..=*latch_id);
+                    ) {
+                        if header_id < latch_term_id {
+                            let mut max_loop_id = *latch_term_id;
+
+                            let mut worklist = vec![bb_id];
+                            let mut visited = HashSet::new();
+                            visited.insert(bb_id);
+
+                            while let Some(curr_id) = worklist.pop() {
+                                let curr_bb = bb_alloc.search_id(curr_id);
+
+                                let curr_node = data.layout().bbs().node(&curr_bb).unwrap();
+                                if let Some(last_inst) = curr_node.insts().back_key() {
+                                    if let Some(inst_id) = val_alloc.get_id_safe(*last_inst) {
+                                        max_loop_id = max_loop_id.max(*inst_id);
+                                    }
+                                }
+
+                                if curr_bb == head_bb {
+                                    continue;
+                                }
+
+                                let preds = &prece[&curr_id];
+                                for &pred_id in preds.iter() {
+                                    if visited.insert(pred_id) {
+                                        worklist.push(pred_id);
+                                    }
+                                }
+                            }
+
+                            register_manager.add_loop(*header_id..=max_loop_id);
+                        }
                     }
                 }
             };
         }
+
         match data.dfg().value(terminator_inst).kind() {
             ValueKind::Jump(jump) => {
                 add_loop!(jump.target());
@@ -178,6 +219,68 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
             _ => unreachable!(),
         }
     }
+    // for &bb_id in rpo_path.iter() {
+    //     let bb = bb_alloc.search_id(bb_id);
+    //     let node = data.layout().bbs().node(&bb).unwrap();
+    //     let iter = data
+    //         .dfg()
+    //         .bb(bb)
+    //         .params()
+    //         .iter()
+    //         .chain(node.insts().iter().map(|(val, _)| val));
+    //     for &inst in iter {
+    //         let id = val_alloc.check_or_alloc(inst);
+    //
+    //         if let ValueKind::Call(call) = data.dfg().value(inst).kind() {
+    //             call_ra = true;
+    //             extra_args = extra_args.max(8.max(call.args().len()) - 8);
+    //             for index in 0..8 {
+    //                 register_manager.add_rule(Reverse(Register::arguments(index)), id..=id);
+    //             }
+    //             for index in 0..7 {
+    //                 register_manager.add_rule(Reverse(Register::temporary(index)), id..=id);
+    //             }
+    //         }
+    //     }
+    //
+    //     let terminator_inst = get_terminator_inst(data, bb);
+    //
+    //     // TODO:
+    //     macro_rules! add_loop {
+    //         ($backedge_goes_to: expr) => {
+    //             if let Some(id) = bb_alloc.get_id_safe($backedge_goes_to) {
+    //                 let head_bb = bb_alloc.search_id(*id);
+    //                 let head_bb_first_inst = *data.dfg().bb(head_bb).params().first().unwrap_or(
+    //                     data.layout()
+    //                         .bbs()
+    //                         .node(&head_bb)
+    //                         .unwrap()
+    //                         .insts()
+    //                         .front_key()
+    //                         .unwrap(),
+    //                 );
+    //                 if let (Some(header_id), Some(latch_id)) = (
+    //                     val_alloc.get_id_safe(head_bb_first_inst),
+    //                     val_alloc.get_id_safe(terminator_inst),
+    //                 ) && header_id < latch_id
+    //                 {
+    //                     register_manager.add_loop(*header_id..=*latch_id);
+    //                 }
+    //             }
+    //         };
+    //     }
+    //     match data.dfg().value(terminator_inst).kind() {
+    //         ValueKind::Jump(jump) => {
+    //             add_loop!(jump.target());
+    //         }
+    //         ValueKind::Branch(branch) => {
+    //             add_loop!(branch.true_bb());
+    //             add_loop!(branch.false_bb());
+    //         }
+    //         ValueKind::Return(..) => {}
+    //         _ => unreachable!(),
+    //     }
+    // }
 
     let mut liveness_ranges = HashMap::new();
 
@@ -300,7 +403,10 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
     curr_inst_offset -= extra_args * 4;
 
     let offset = {
-        let unaligned = curr_inst_offset + if call_ra { 4 } else { 0 } + extra_args * 4;
+        let unaligned = curr_inst_offset
+            + if call_ra { 4 } else { 0 }
+            + extra_args * 4
+            + register_manager.callee_used.len() * 4;
         if unaligned & 0x0F != 0 {
             (unaligned | 0x0F) + 1
         } else {
@@ -330,6 +436,7 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
         offset,
         call_ra,
         extra_args,
+        callee_usage: register_manager.callee_used,
     }
 }
 

@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use itertools::Itertools;
 use key_node_list::KeyValueList;
 use koopa::ir::{BasicBlock, BinaryOp, Function, FunctionData, Program, Type, Value, ValueKind};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -37,7 +38,6 @@ pub enum Register {
     t2,
     t3,
     t4,
-    s0,
     s1,
     s2,
     s3,
@@ -63,7 +63,7 @@ pub const A0_BASE: u8 = 0;
 #[allow(unused)]
 pub const T0_BASE: u8 = 8;
 #[allow(unused)]
-pub const S0_BASE: u8 = 15;
+pub const S1_BASE: u8 = 14;
 
 impl Register {
     #[inline]
@@ -76,6 +76,12 @@ impl Register {
     fn is_arg(&self) -> bool {
         use Register::*;
         matches!(self, a0 | a1 | a2 | a3 | a4 | a5 | a6 | a7)
+    }
+
+    #[inline]
+    pub fn is_saved(&self) -> bool {
+        use Register::*;
+        matches!(self, s1 | s2 | s3 | s4 | s5 | s6 | s7 | s8 | s9 | s10 | s11)
     }
 
     pub fn arguments(index: usize) -> Register {
@@ -641,7 +647,7 @@ impl AsmGenContext {
         push!(self.inst_list, inst);
     }
 
-    pub fn prologue(&mut self, offset: usize, call_ra: bool) {
+    pub fn prologue(&mut self, offset: usize, call_ra: bool, callee_usage: HashSet<Register>) {
         use Register::{ra, sp};
         let offset = offset as i32;
 
@@ -649,13 +655,22 @@ impl AsmGenContext {
             self.add_imm(sp, -offset, sp);
         }
 
-        if call_ra {
+        let mut callee_start = if call_ra {
             self.save_word(ra, offset - 4, sp);
+            8
+        } else {
+            4
+        };
+
+        for &reg in callee_usage.iter().sorted() {
+            self.save_word(reg, offset - callee_start, sp);
+            callee_start += 4;
         }
 
         self.epilogue_stack.push(Epilogue {
             offset,
             call_ra,
+            callee_usage,
             finished_once: false,
         })
     }
@@ -825,6 +840,7 @@ impl AsmGenContext {
 pub struct Epilogue {
     offset: i32,
     call_ra: bool,
+    callee_usage: HashSet<Register>,
     finished_once: bool,
 }
 
@@ -837,8 +853,15 @@ impl Epilogue {
     pub fn finish(&self, ctx: &mut AsmGenContext) {
         import_reg_and_inst!();
         if self.offset != 0 {
-            if self.call_ra {
+            let mut callee_start = if self.call_ra {
                 ctx.load_word(ra, self.offset - 4, sp);
+                8
+            } else {
+                4
+            };
+            for &reg in self.callee_usage.iter().sorted() {
+                ctx.load_word(reg, self.offset - callee_start, sp);
+                callee_start += 4;
             }
             ctx.add_imm(sp, self.offset, sp);
         }

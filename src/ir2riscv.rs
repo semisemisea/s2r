@@ -25,58 +25,12 @@ impl GenerateAsm for FunctionData {
             offset,
             call_ra,
             extra_args,
+            callee_usage,
         } = register_alloc::liveness_analysis(ctx.curr_func_data(program));
 
         *ctx.allocation_mut() = allocation;
 
-        // we first figure out how much the stack size should be.
-        // let (inst_offset, call_ra, max_args) = self
-        //     .layout()
-        //     .bbs()
-        //     .iter()
-        //     .flat_map(|(&bb, node)| self.dfg().bb(bb).params().iter().chain(node.insts().keys()))
-        //     .fold(
-        //         (0, false, 0),
-        //         |(mut inst_offset, mut call_ra, mut max_args), &inst| {
-        //             inst_offset += inst_size(self, inst);
-        //             if let ValueKind::Call(call) = self.dfg().value(inst).kind() {
-        //                 call_ra = true;
-        //                 max_args = max_args.max(call.args().len())
-        //             }
-        //
-        //             (inst_offset, call_ra, max_args)
-        //         },
-        //     );
-
-        // #[cfg(debug_assertions)]
-        // {
-        //     eprintln!("function:     {}", self.name().strip_prefix('@').unwrap());
-        //     eprintln!("inst_offset:  {inst_offset}");
-        //     eprintln!("call_ra:      {call_ra}");
-        //     eprintln!("max_args:     {max_args}");
-        //     eprintln!();
-        // }
-
-        // let offset = {
-        //     let unaligned = insts_size + if call_ra { 4 } else { 0 } + extra_args * 4;
-        //     if unaligned & 0x0F != 0 {
-        //         (unaligned | 0x0F) + 1
-        //     } else {
-        //         unaligned
-        //     }
-        // };
-
-        // let offset = inst_offset
-        //     + if call_ra { 4 } else { 0 }
-        //     + (max_args.max(8) - 8) * 4
-        //     + self.params().len() * 4;
-        // // According to RISC-V, sp_offset should be aligned with 16.
-        // let offset = if (offset & 0x0F) != 0 {
-        //     (offset + 0x0F) >> 4 << 4
-        // } else {
-        //     offset
-        // };
-        ctx.prologue(offset, call_ra);
+        ctx.prologue(offset, call_ra, callee_usage);
 
         let curr_offset = (extra_args.max(8) - 8) * 4;
 
