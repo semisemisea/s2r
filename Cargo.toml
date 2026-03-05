@@ -17,6 +17,7 @@ num_enum = "0.7.5"
 thiserror = "2.0.17"
 key-node-list = "0.0.6"
 itertools = "0.14.0"
+num-traits = "0.2.19"
 
 [profile.bench]
 incremental = true
