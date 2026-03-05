@@ -323,6 +323,20 @@ pub enum RiscvInst {
     call {
         callee: String,
     },
+    /// Logical Left Shift.
+    /// rd = rs1 << rs2;
+    sll {
+        rd: Register,
+        rs1: Register,
+        rs2: Register,
+    },
+    /// Arithmetic Right Shift.
+    /// rd = rs1 >> rs2;
+    sra {
+        rd: Register,
+        rs1: Register,
+        rs2: Register,
+    },
     _string {
         indent_level: usize,
         str: String,
@@ -372,6 +386,8 @@ impl std::fmt::Display for RiscvInst {
             RiscvInst::beqz { rs, label } => write!(f, "beqz  {}, {}", rs, label),
             RiscvInst::bnez { rs, label } => write!(f, "bnez  {}, {}", rs, label),
             RiscvInst::call { callee } => write!(f, "call  {}", callee),
+            RiscvInst::sll { rd, rs1, rs2 } => write!(f, "sll  {}, {}, {}", rd, rs1, rs2),
+            RiscvInst::sra { rd, rs1, rs2 } => write!(f, "sra  {}, {}, {}", rd, rs1, rs2),
             RiscvInst::_string { str, indent_level } => {
                 for _ in 0..*indent_level {
                     write!(f, " ")?
@@ -1118,9 +1134,17 @@ impl AsmGenContext {
             BinaryOp::And => todo!(),
             BinaryOp::Or => todo!(),
             BinaryOp::Xor => todo!(),
-            BinaryOp::Shl => todo!(),
+            BinaryOp::Shl => self.write_inst(sll {
+                rd: res,
+                rs1: lhs,
+                rs2: rhs,
+            }),
             BinaryOp::Shr => todo!(),
-            BinaryOp::Sar => todo!(),
+            BinaryOp::Sar => self.write_inst(sra {
+                rd: res,
+                rs1: lhs,
+                rs2: rhs,
+            }),
         }
     }
 

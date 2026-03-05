@@ -13,6 +13,8 @@ mod riscv_utils;
 const SSA_ENABLE: bool = true;
 const SCCP_ENABLE: bool = true;
 const DCE_ENABLE: bool = true;
+const GVN_ENABLE: bool = true;
+const SR_ENABLE: bool = true;
 
 use crate::{
     asm_pass_utils::AsmPassManager,
@@ -66,11 +68,23 @@ fn main() -> std::io::Result<()> {
         // pass_manager.register(Pass::Function(Box::new(joe)));
     }
 
+    if SR_ENABLE {
+        let sr = opt::sr::StrengthReduction;
+        pass_manager.register(Pass::Function(Box::new(sr)));
+    }
+
+    if GVN_ENABLE {
+        let gvn = opt::gvn::GlobalValueNumbering;
+        pass_manager.register(Pass::Function(Box::new(gvn)));
+    }
+
     if DCE_ENABLE {
         let dpe = opt::dce::DeadPhiElimination;
         pass_manager.register(Pass::Function(Box::new(dpe)));
         let dce = opt::dce::DeadCodeElimination;
         pass_manager.register(Pass::Module(Box::new(dce)));
+        let ubb = opt::dce::UnreachableBasicBlock;
+        pass_manager.register(Pass::Function(Box::new(ubb)));
     }
 
     pass_manager.run_passes(&mut ir_ctx.program);
@@ -80,6 +94,7 @@ fn main() -> std::io::Result<()> {
     let mut g = koopa::back::KoopaGenerator::new(Vec::new());
     g.generate_on(&ir_ctx.end()).unwrap();
     let ir_text = std::str::from_utf8(&g.writer()).unwrap().to_string();
+    std::fs::write("hello.koopa", ir_text.clone())?;
 
     let driver = koopa::front::Driver::from(ir_text.clone());
     // Because we want name to be unique :)
