@@ -61,7 +61,7 @@ impl ValueStatusMap {
     }
 
     fn insert(&mut self, val: Value, status: VariableStatus) {
-        let id = self.var_allocator.check_or_alloc(val);
+        let id = self.var_allocator.check_or_alloc_id_same(val);
         // must be a new value that did not appear before
         assert!(id == self.status.len());
         self.status.push(status);
@@ -69,13 +69,13 @@ impl ValueStatusMap {
 
     #[must_use]
     fn merge(&mut self, val: Value, status: VariableStatus) -> bool {
-        let id = self.var_allocator.get_id(val);
+        let id = self.var_allocator.get_id(&val);
         self.status[id].update(status)
     }
 
     #[must_use]
     fn insert_or_merge(&mut self, val: Value, status: VariableStatus) -> bool {
-        let id = self.var_allocator.check_or_alloc(val);
+        let id = self.var_allocator.check_or_alloc_id_same(val);
         if id < self.status.len() {
             self.merge(val, status)
         } else {
@@ -86,7 +86,7 @@ impl ValueStatusMap {
 
     fn get(&self, val: Value) -> &VariableStatus {
         self.var_allocator
-            .get_id_safe(val)
+            .get_id_safe(&val)
             .map(|&x| &self.status[x])
             // .unwrap()
             .unwrap_or(&VariableStatus::Top)
@@ -94,7 +94,7 @@ impl ValueStatusMap {
 
     fn get_safe(&self, val: Value) -> Option<&VariableStatus> {
         self.var_allocator
-            .get_id_safe(val)
+            .get_id_safe(&val)
             .and_then(|&x| self.status.get(x))
     }
 
@@ -124,7 +124,7 @@ impl FunctionPass for SparseConditionConstantPropagation {
             return;
         };
         let mut bb_allocator: IDAllocator<BasicBlock, BId> = IDAllocator::new(1);
-        bb_allocator.check_or_alloc(entry_bb);
+        bb_allocator.check_or_alloc_id_same(entry_bb);
 
         let mut edge_visited = EdgeSet::new();
         let mut vertex_visited = HashSet::new();
@@ -282,16 +282,16 @@ impl FunctionPass for SparseConditionConstantPropagation {
                 }
                 .to_vec();
                 for (arg, param) in args.into_iter().zip(params) {
-                    let used_by = data
-                        .dfg()
-                        .value(param)
-                        .used_by()
-                        .iter()
-                        .copied()
-                        .collect::<Vec<_>>();
-                    for param_used_by in used_by {
-                        visit_and_replace(data, param_used_by, param, arg);
-                    }
+                    // let used_by = data
+                    //     .dfg()
+                    //     .value(param)
+                    //     .used_by()
+                    //     .iter()
+                    //     .copied()
+                    //     .collect::<Vec<_>>();
+                    // for param_used_by in used_by {
+                    visit_and_replace(data, param, arg);
+                    // }
                     data.dfg_mut()
                         .bb_mut(bb)
                         .params_mut()
@@ -343,7 +343,7 @@ fn process_instruction(
                     let Some(parent_bb) = data.layout().parent_bb(val) else {
                         return true;
                     };
-                    bb_allocator.get_id_safe(parent_bb).is_some()
+                    bb_allocator.get_id_safe(&parent_bb).is_some()
                 })
                 .copied()
                 .collect::<Vec<_>>()
@@ -424,8 +424,8 @@ fn process_instruction(
                         }
                     }
                     flow_worklist.push_back((
-                        bb_allocator.get_id(data.layout().parent_bb(inst).unwrap()),
-                        bb_allocator.check_or_alloc(target_bb),
+                        bb_allocator.get_id(&data.layout().parent_bb(inst).unwrap()),
+                        bb_allocator.check_or_alloc_id_same(target_bb),
                     ));
                 }
                 Some(influenced)
@@ -440,8 +440,8 @@ fn process_instruction(
                     }
                 }
                 flow_worklist.push_back((
-                    bb_allocator.get_id(data.layout().parent_bb(inst).unwrap()),
-                    bb_allocator.check_or_alloc(jump.target()),
+                    bb_allocator.get_id(&data.layout().parent_bb(inst).unwrap()),
+                    bb_allocator.check_or_alloc_id_same(jump.target()),
                 ));
                 Some(influenced)
             }

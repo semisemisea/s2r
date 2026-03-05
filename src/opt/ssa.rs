@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::opt::utils::{self, BId, CFGGraph, IDAllocator, VId};
+use crate::opt::utils::{self, BId, CFGGraph, DomTree, IDAllocator, IDomMap, VId};
 
 const FUNC_ARG_OPT_ENABLE: bool = false;
 
@@ -20,14 +20,10 @@ type Set = HashSet<BId>;
 
 type GPath = Vec<BId>;
 
-type IDomMap = Vec<BId>;
-
 // not all basic block has it's frontier so we can use HashMap instead of Vec
 type Frontier = HashMap<BId, HashSet<BId>>;
 
 type ValUsage = Vec<Vec<VId>>;
-
-type DomTree = Vec<Vec<BId>>;
 
 // variable(vid) is insert as basic block(bbid) at index(usize)
 type Index = usize;
@@ -42,6 +38,7 @@ impl FunctionPass for SSATransform {
         if data.layout().entry_bb().is_none() {
             return;
         }
+
         eprintln!("----------------------------------");
         eprintln!("function: {func:?}");
         eprintln!("name: {}", data.name());
@@ -54,9 +51,10 @@ impl FunctionPass for SSATransform {
         // get graph and reverse graph
         let (graph, prece) = utils::build_cfg_both(data, &mut bb_id);
         eprintln!("graph: {graph:?}");
+        eprintln!("prece: {prece:?}");
 
         // entry_bb must get 0 for id
-        assert!(bb_id.get_id(data.layout().entry_bb().unwrap()) == 0);
+        assert!(bb_id.get_id(&data.layout().entry_bb().unwrap()) == 0);
 
         let rpo_path = utils::rpo_path(&graph);
         // start from entry_bb so first element of RPO is zero
@@ -66,11 +64,11 @@ impl FunctionPass for SSATransform {
         // get immediate dominator of each block
         // dominance is a partial order.
         // immediate dominance means partial order coverage
-        let idom_map = idom(&prece, &rpo_path);
+        let idom_map = utils::idom(&prece, &rpo_path);
         eprintln!("idom_map: {idom_map:?}");
 
         // for dominance, its hasse diagram is a tree
-        let donimnace_tree = build_dominance_tree(&idom_map, rpo_path.len());
+        let donimnace_tree = utils::build_dominance_tree(&idom_map, rpo_path.len());
         eprintln!("dominance_tree: {donimnace_tree:?}");
 
         // then we can do frontier analysis
@@ -223,13 +221,13 @@ fn dfs(
             // Step 2.1: Straight delete `alloc`.
             // `alloc` can only be deleted when all `load` and `store` is deleted.
             ValueKind::Alloc(..) => {
-                if val_id.get_id_safe(val).is_some() {
+                if val_id.get_id_safe(&val).is_some() {
                     remove_list.push((val, bb));
                 }
             }
             // Step 2.2: Update the value in stack with corresponding variable if we met `store`.
             ValueKind::Store(store) => {
-                if let Some(&dest_id) = val_id.get_id_safe(store.dest()) {
+                if let Some(&dest_id) = val_id.get_id_safe(&store.dest()) {
                     st[dest_id].push(store.value());
                     history.push(dest_id);
 
@@ -237,18 +235,19 @@ fn dfs(
                 }
             }
             ValueKind::Load(load) => {
-                if let Some(&load_id) = val_id.get_id_safe(load.src()) {
+                if let Some(&load_id) = val_id.get_id_safe(&load.src()) {
                     let rep_with = *st[load_id].last().unwrap();
-                    let list = val_data.used_by().iter().copied().collect::<Vec<_>>();
-                    for used_by in list {
-                        utils::visit_and_replace(data, used_by, val, rep_with);
-                    }
+                    utils::visit_and_replace(data, val, rep_with);
+                    // let list = val_data.used_by().iter().copied().collect::<Vec<_>>();
+                    // for used_by in list {
+                    //     utils::visit_and_replace(data, used_by, val, rep_with);
+                    // }
                     remove_list.push((val, bb));
                 }
             }
             ValueKind::Jump(jump) => {
                 let target = jump.target();
-                let target_id = bb_id.get_id(target);
+                let target_id = bb_id.get_id(&target);
                 let mut args = jump.args().to_vec();
                 for (i, &(vid, _)) in (args.len()..).zip(insert_table[target_id].iter()) {
                     let item = match st[vid].last() {
@@ -268,9 +267,9 @@ fn dfs(
             ValueKind::Branch(branch) => {
                 let cond = branch.cond();
                 let true_bb = branch.true_bb();
-                let true_bb_id = bb_id.get_id(true_bb);
+                let true_bb_id = bb_id.get_id(&true_bb);
                 let false_bb = branch.false_bb();
-                let false_bb_id = bb_id.get_id(false_bb);
+                let false_bb_id = bb_id.get_id(&false_bb);
                 let mut false_args = branch.false_args().to_vec();
                 let mut true_args = branch.true_args().to_vec();
                 for (i, &(vid, _)) in (false_args.len()..).zip(insert_table[false_bb_id].iter()) {
@@ -354,14 +353,14 @@ pub fn variable_analysis(
                 } else {
                     let ty = utils::alloc_ty(val, data);
                     if ty.is_i32() {
-                        val_id.check_or_alloc(val);
+                        val_id.check_or_alloc_id_same(val);
                         val_usage.push(Vec::new());
                     }
                 }
             }
             ValueKind::Store(store) => {
-                if let Some(&vid) = val_id.get_id_safe(store.dest()) {
-                    let bbid = bb_id.get_id(bb);
+                if let Some(&vid) = val_id.get_id_safe(&store.dest()) {
+                    let bbid = bb_id.get_id(&bb);
                     val_usage[vid].push(bbid);
                 }
             }
@@ -393,56 +392,4 @@ pub fn dominance_analysis(
     }
 
     dominance_frontier
-}
-
-fn idom(prede: &CFGGraph, rpo: &[BId]) -> IDomMap {
-    let mut map = IDomMap::new();
-    map.resize(rpo.len(), usize::MAX);
-    let mut rpo_idx = vec![0; rpo.len()];
-    for (i, &id) in rpo.iter().enumerate() {
-        rpo_idx[id] = i;
-    }
-
-    map[0] = 0;
-
-    let mut converged = false;
-    while !converged {
-        converged = true;
-        for node in &rpo[1..] {
-            let mut it = prede[node].iter();
-            let mut new_idom = *it.find(|&&x| map[x] != usize::MAX).unwrap();
-            for &other_node in it.filter(|&&x| map[x] != usize::MAX) {
-                new_idom = lca(new_idom, other_node, &map, rpo);
-            }
-            if map[*node] != new_idom {
-                map[*node] = new_idom;
-                converged = false;
-            }
-        }
-    }
-    map
-}
-
-fn build_dominance_tree(idom_map: &IDomMap, rpo_len: usize) -> DomTree {
-    let mut ret = vec![vec![]; rpo_len];
-    // remember that idom_map we make `idom_map[0] = 0`
-    // that is not allowed in a tree (no loop or ring)
-    for (vid, &pa) in idom_map.iter().enumerate().skip(1) {
-        ret[pa].push(vid);
-    }
-    ret
-}
-
-fn lca(n1: BId, n2: BId, map: &IDomMap, rpo_idx: &[BId]) -> BId {
-    let mut p1 = n1;
-    let mut p2 = n2;
-    while p1 != p2 {
-        while rpo_idx[p1] > rpo_idx[p2] {
-            p1 = map[p1];
-        }
-        while rpo_idx[p1] < rpo_idx[p2] {
-            p2 = map[p2];
-        }
-    }
-    p1
 }

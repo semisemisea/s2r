@@ -121,7 +121,7 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
     let mut extra_args = 0usize;
 
     for &fparam in data.params() {
-        val_alloc.check_or_alloc(fparam);
+        val_alloc.check_or_alloc_id_same(fparam);
     }
     for &bb_id in rpo_path.iter() {
         let bb = bb_alloc.search_id(bb_id);
@@ -134,7 +134,7 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
             .chain(node.insts().iter().map(|(val, _)| val));
 
         for &inst in iter {
-            let id = val_alloc.check_or_alloc(inst);
+            let id = val_alloc.check_or_alloc_id_same(inst);
 
             if let ValueKind::Call(call) = data.dfg().value(inst).kind() {
                 call_ra = true;
@@ -155,7 +155,7 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
 
         macro_rules! add_loop {
             ($backedge_goes_to: expr) => {
-                if let Some(id) = bb_alloc.get_id_safe($backedge_goes_to) {
+                if let Some(id) = bb_alloc.get_id_safe(&$backedge_goes_to) {
                     let head_bb = bb_alloc.search_id(*id);
                     let head_bb_first_inst = *data.dfg().bb(head_bb).params().first().unwrap_or(
                         data.layout()
@@ -168,8 +168,8 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
                     );
 
                     if let (Some(header_id), Some(latch_term_id)) = (
-                        val_alloc.get_id_safe(head_bb_first_inst),
-                        val_alloc.get_id_safe(terminator_inst),
+                        val_alloc.get_id_safe(&head_bb_first_inst),
+                        val_alloc.get_id_safe(&terminator_inst),
                     ) {
                         if header_id < latch_term_id {
                             let mut max_loop_id = *latch_term_id;
@@ -183,7 +183,7 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
 
                                 let curr_node = data.layout().bbs().node(&curr_bb).unwrap();
                                 if let Some(last_inst) = curr_node.insts().back_key() {
-                                    if let Some(inst_id) = val_alloc.get_id_safe(*last_inst) {
+                                    if let Some(inst_id) = val_alloc.get_id_safe(last_inst) {
                                         max_loop_id = max_loop_id.max(*inst_id);
                                     }
                                 }
@@ -291,7 +291,7 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
                 .value($inst)
                 .used_by()
                 .iter()
-                .filter_map(|&val| val_alloc.get_id_safe(val))
+                .filter_map(|&val| val_alloc.get_id_safe(&val))
                 .max()
                 .copied()
                 .unwrap_or($min_id);
@@ -303,7 +303,7 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
     // val_alloc.get_id($inst)
 
     for &fparam in data.params().iter().take(8) {
-        insert_range!(fparam, val_alloc.get_id(fparam));
+        insert_range!(fparam, val_alloc.get_id(&fparam));
     }
     for bb_id in rpo_path {
         let bb = bb_alloc.search_id(bb_id);
@@ -315,7 +315,7 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
             .bb(bb)
             .used_by()
             .iter()
-            .map(|&val| val_alloc.get_id(val))
+            .map(|&val| val_alloc.get_id(&val))
             .min()
         {
             for &block_param in data.dfg().bb(bb).params() {
@@ -328,7 +328,7 @@ pub fn liveness_analysis(data: &FunctionData) -> RegisterAllocationResult {
             .map(|(val, _)| val)
             .filter(|&&val| can_produce_value(val, data))
         {
-            insert_range!(inst, val_alloc.get_id(inst));
+            insert_range!(inst, val_alloc.get_id(&inst));
         }
     }
 

@@ -34,6 +34,7 @@ impl ModulePass for DeadCodeElimination {
     }
 }
 
+// TODO: side-effet function rules.
 fn has_side_effect(func: Function) -> bool {
     true
 }
@@ -198,7 +199,7 @@ impl FunctionPass for DeadPhiElimination {
         // for (&bb, node) in data.layout().bbs() {
         //     bb_allocator.check_or_alloca(bb);
         for (assert_id, (&bb, node)) in data.layout().bbs().iter().enumerate() {
-            assert_eq!(bb_allocator.check_or_alloc(bb), assert_id);
+            assert_eq!(bb_allocator.check_or_alloc_id_same(bb), assert_id);
             let params = data.dfg().bb(bb).params();
             let unused_params_index = (0..params.len())
                 .filter(|&index| data.dfg().value(params[index]).used_by().is_empty())
@@ -275,32 +276,32 @@ impl FunctionPass for UnreachableBasicBlock {
 
             for id in unreachable_bb {
                 let bb = id_allocator.search_id(id);
-                eprintln!("delete basic block: {:?}", bb);
-                eprintln!("used_by check: {:?}", data.dfg().bb(bb).used_by());
-                // for val in data.dfg().bb(bb).used_by() {
-                //     eprintln!("{:?}", data.dfg().value(*val).kind());
+                // eprintln!("delete basic block: {:?}", bb);
+                // eprintln!("used_by check: {:?}", data.dfg().bb(bb).used_by());
+                // // for val in data.dfg().bb(bb).used_by() {
+                // //     eprintln!("{:?}", data.dfg().value(*val).kind());
+                // // }
+                // eprintln!("name: {:?}", data.dfg().bb(bb).name());
+                // let remove_list = data
+                //     .dfg()
+                //     .bb(bb)
+                //     .used_by()
+                //     .iter()
+                //     .chain(
+                //         data.layout()
+                //             .bbs()
+                //             .node(&bb)
+                //             .unwrap()
+                //             .insts()
+                //             .iter()
+                //             .map(|(x, _)| x),
+                //     )
+                //     .copied()
+                //     .collect::<Vec<_>>();
+                // for val in remove_list {
+                //     dfs_remove(val, data, bb);
+                //     // data.dfg_mut().remove_value(val);
                 // }
-                eprintln!("name: {:?}", data.dfg().bb(bb).name());
-                let remove_list = data
-                    .dfg()
-                    .bb(bb)
-                    .used_by()
-                    .iter()
-                    .chain(
-                        data.layout()
-                            .bbs()
-                            .node(&bb)
-                            .unwrap()
-                            .insts()
-                            .iter()
-                            .map(|(x, _)| x),
-                    )
-                    .copied()
-                    .collect::<Vec<_>>();
-                for val in remove_list {
-                    dfs_remove(val, data, bb);
-                    // data.dfg_mut().remove_value(val);
-                }
 
                 data.layout_mut().bbs_mut().remove(&bb);
                 // data.dfg_mut().remove_bb(bb);
